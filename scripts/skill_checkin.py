@@ -128,12 +128,41 @@ class CheckinSkill:
             print(f"启动模拟器失败: {e}")
             return False
     
+    def is_app_running(self):
+        """检查应用是否已经在运行"""
+        try:
+            result = subprocess.run([self.adb_path, "shell", "dumpsys", "activity", "activities"], capture_output=True, text=True)
+            return self.package_name in result.stdout
+        except Exception as e:
+            print(f"检查应用运行状态失败: {e}")
+            return False
+    
     def start_fxiaoke(self):
         """启动纷享销客应用"""
         print("启动纷享销客应用...")
+        
+        # 检查应用是否已经在运行
+        if self.is_app_running():
+            print("应用已经在运行，无需重新启动")
+            return True
+        
         try:
-            subprocess.run([self.adb_path, "shell", "am", "start", "-n", f"{self.package_name}/{self.activity_name}"], check=True)
-            time.sleep(5)  # 等待应用启动
+            # 尝试解锁屏幕（如果锁屏）
+            subprocess.run([self.adb_path, "shell", "input", "keyevent", "82"], check=True)  # 82是解锁键
+            time.sleep(1)
+            
+            # 使用 -a 参数和 -f 参数确保应用在前台启动
+            subprocess.run([self.adb_path, "shell", "am", "start", "-a", "android.intent.action.MAIN", "-n", f"{self.package_name}/{self.activity_name}", "-f", "0x10000000"], check=True)
+            time.sleep(10)  # 增加等待时间
+            
+            # 尝试使用 monkey 命令激活应用
+            subprocess.run([self.adb_path, "shell", "monkey", "-p", self.package_name, "-c", "android.intent.category.LAUNCHER", "1"], check=True)
+            time.sleep(5)  # 增加等待时间
+            
+            # 模拟点击屏幕，确保应用在前台
+            subprocess.run([self.adb_path, "shell", "input", "tap", "500", "500"], check=True)
+            time.sleep(2)
+            
             return True
         except Exception as e:
             print(f"启动应用失败: {e}")
@@ -143,115 +172,140 @@ class CheckinSkill:
         """进入考勤页面"""
         print("进入考勤页面...")
         try:
-            # 点击底部导航栏的「应用」按钮（适配1440*2560分辨率）
-            print("点击底部导航栏的「应用」按钮...")
-            subprocess.run([self.adb_path, "shell", "input", "tap", "720", "2304"], check=True)
-            time.sleep(2)
+            # 第一步：判断当前页面状态
+            page_status = self.check_page_status()
+            print(f"当前页面状态: {page_status}")
             
-            # 截图应用页面，确认当前状态
-            app_screenshot = os.path.join(self.screenshot_dir, "app_page.png")
-            print(f"截图应用页面到: {app_screenshot}")
-            subprocess.run([self.adb_path, "shell", "screencap", "/sdcard/app_screenshot.png"], check=True)
-            subprocess.run([self.adb_path, "pull", "/sdcard/app_screenshot.png", app_screenshot], check=True)
-            print(f"应用页面截图已保存至: {app_screenshot}")
+            # 根据页面状态执行不同操作
+            if page_status == 'other':
+                # 不是考勤页面也不是首页，先回到首页
+                print("当前页面不是考勤页面也不是首页，先回到首页...")
+                if not self.go_to_home():
+                    print("回到首页失败，导航终止")
+                    return False
+                # 回到首页后，重新判断页面状态
+                page_status = self.check_page_status()
+                if page_status != 'home':
+                    print("未能回到首页，导航终止")
+                    return False
             
-            # 使用UIAutomator查找考勤选项
-            print("使用UIAutomator查找考勤选项...")
-            subprocess.run([self.adb_path, "shell", "uiautomator", "dump", "/sdcard/window_dump.xml"], check=True)
-            time.sleep(1)
-            
-            # 拉取XML文件到本地
-            xml_path = os.path.join(self.screenshot_dir, "window_dump.xml")
-            subprocess.run([self.adb_path, "pull", "/sdcard/window_dump.xml", xml_path], check=True)
-            print(f"UIAutomator dump已保存至: {xml_path}")
-            
-            # 读取并分析XML文件
-            try:
-                with open(xml_path, 'r', encoding='utf-8') as f:
-                    xml_content = f.read()
+            if page_status == 'home':
+                # 是首页，导航到考勤页面
+                print("当前页面是首页，导航到考勤页面...")
                 
-                # 查找包含"考勤"的元素
-                import re
-                match = re.search(r'text=\"考勤\"[^>]+bounds=\"\[(\d+),(\d+)\]\[(\d+),(\d+)\]\"', xml_content)
-                if match:
-                    left = int(match.group(1))
-                    top = int(match.group(2))
-                    right = int(match.group(3))
-                    bottom = int(match.group(4))
-                    # 计算中心点坐标
-                    x = (left + right) // 2
-                    y = (top + bottom) // 2
-                    print(f"找到考勤选项，坐标: ({x}, {y})")
+                # 点击底部导航栏的「应用」按钮（适配1440*2560分辨率）
+                print("点击底部导航栏的「应用」按钮...")
+                # 底部导航栏通常在屏幕底部，尝试不同的坐标
+                for y in [2304, 2350, 2400]:
+                    print(f"尝试点击底部导航栏，坐标: (720, {y})")
+                    subprocess.run([self.adb_path, "shell", "input", "tap", "720", str(y)], check=True)
+                    time.sleep(3)
                     
-                    # 点击考勤选项
-                    print(f"点击考勤选项，坐标: ({x}, {y})")
-                    subprocess.run([self.adb_path, "shell", "input", "tap", str(x), str(y)], check=True)
-                    time.sleep(5)
-                    
-                    # 检查当前页面的Activity
-                    print("检查当前页面的Activity...")
-                    result = subprocess.run([self.adb_path, "shell", "dumpsys", "activity", "top"], capture_output=True, text=True)
-                    activity_lines = [line for line in result.stdout.split('\n') if 'ACTIVITY' in line]
-                    print(f"当前Activity: {activity_lines}")
-                    
-                    # 检查是否成功进入考勤页面
-                    if any('AttendanceActivity' in line for line in activity_lines):
-                        print("成功进入考勤页面！")
-                    else:
-                        print("未成功进入考勤页面，尝试其他方法...")
-                        # 尝试使用更精确的坐标点击
-                        for offset in [(-20, -10), (0, -10), (20, -10), (-20, 0), (0, 0), (20, 0), (-20, 10), (0, 10), (20, 10)]:
-                            offset_x = x + offset[0]
-                            offset_y = y + offset[1]
-                            print(f"尝试点击坐标: ({offset_x}, {offset_y})")
-                            subprocess.run([self.adb_path, "shell", "input", "tap", str(offset_x), str(offset_y)], check=True)
-                            time.sleep(3)
-                            
-                            # 检查当前页面的Activity
-                            result = subprocess.run([self.adb_path, "shell", "dumpsys", "activity", "top"], capture_output=True, text=True)
-                            activity_lines = [line for line in result.stdout.split('\n') if 'ACTIVITY' in line]
-                            print(f"当前Activity: {activity_lines}")
-                            
-                            if any('AttendanceActivity' in line for line in activity_lines):
-                                print("成功进入考勤页面！")
-                                break
-                else:
-                    print("未找到考勤选项，尝试直接使用坐标点击")
-                    # 尝试使用更精确的坐标点击
-                    for x in [480, 500, 520]:
-                        for y in [180, 190, 200]:
-                            print(f"尝试点击坐标: ({x}, {y})")
-                            subprocess.run([self.adb_path, "shell", "input", "tap", str(x), str(y)], check=True)
-                            time.sleep(2)
-                            
-                            # 检查当前页面的Activity
-                            result = subprocess.run([self.adb_path, "shell", "dumpsys", "activity", "top"], capture_output=True, text=True)
-                            activity_lines = [line for line in result.stdout.split('\n') if 'ACTIVITY' in line]
-                            print(f"当前Activity: {activity_lines}")
-                            
-                            if any('AttendanceActivity' in line for line in activity_lines):
-                                print("成功进入考勤页面！")
-                                break
-                        if any('AttendanceActivity' in line for line in activity_lines):
-                            break
-            except Exception as xml_error:
-                print(f"分析XML文件失败: {xml_error}")
-                # 尝试使用预设坐标点击
-                print("尝试使用预设坐标点击考勤选项...")
-                preset_coordinates = [(480, 180), (500, 180), (520, 180), (480, 190), (500, 190), (520, 190), (480, 200), (500, 200), (520, 200)]
-                for coord in preset_coordinates:
-                    print(f"尝试点击坐标: ({coord[0]}, {coord[1]})")
-                    subprocess.run([self.adb_path, "shell", "input", "tap", str(coord[0]), str(coord[1])], check=True)
-                    time.sleep(2)
-                    
-                    # 检查当前页面的Activity
-                    result = subprocess.run([self.adb_path, "shell", "dumpsys", "activity", "top"], capture_output=True, text=True)
-                    activity_lines = [line for line in result.stdout.split('\n') if 'ACTIVITY' in line]
-                    print(f"当前Activity: {activity_lines}")
-                    
-                    if any('AttendanceActivity' in line for line in activity_lines):
-                        print("成功进入考勤页面！")
+                    # 检查是否进入了应用页面
+                    current_status = self.check_page_status()
+                    if current_status != 'home':
+                        print("成功进入应用页面！")
                         break
+                
+                # 截图应用页面，确认当前状态
+                app_screenshot = os.path.join(self.screenshot_dir, "app_page.png")
+                print(f"截图应用页面到: {app_screenshot}")
+                subprocess.run([self.adb_path, "shell", "screencap", "/sdcard/app_screenshot.png"], check=True)
+                subprocess.run([self.adb_path, "pull", "/sdcard/app_screenshot.png", app_screenshot], check=True)
+                print(f"应用页面截图已保存至: {app_screenshot}")
+                
+                # 使用UIAutomator查找考勤选项
+                print("使用UIAutomator查找考勤选项...")
+                subprocess.run([self.adb_path, "shell", "uiautomator", "dump", "/sdcard/window_dump.xml"], check=True)
+                time.sleep(1)
+                
+                # 拉取XML文件到本地
+                xml_path = os.path.join(self.screenshot_dir, "window_dump.xml")
+                subprocess.run([self.adb_path, "pull", "/sdcard/window_dump.xml", xml_path], check=True)
+                print(f"UIAutomator dump已保存至: {xml_path}")
+                
+                # 读取并分析XML文件
+                try:
+                    with open(xml_path, 'r', encoding='utf-8') as f:
+                        xml_content = f.read()
+                    
+                    # 查找包含"考勤"的元素
+                    match = re.search(r'text=\"考勤\"[^>]+bounds=\"\[(\d+),(\d+)\]\[(\d+),(\d+)\]\"', xml_content)
+                    if match:
+                        left = int(match.group(1))
+                        top = int(match.group(2))
+                        right = int(match.group(3))
+                        bottom = int(match.group(4))
+                        # 计算中心点坐标
+                        x = (left + right) // 2
+                        y = (top + bottom) // 2
+                        print(f"找到考勤选项，坐标: ({x}, {y})")
+                        
+                        # 点击考勤选项
+                        print(f"点击考勤选项，坐标: ({x}, {y})")
+                        subprocess.run([self.adb_path, "shell", "input", "tap", str(x), str(y)], check=True)
+                        time.sleep(5)
+                        
+                        # 再次检查页面状态，看是否已经进入考勤页面
+                        current_status = self.check_page_status()
+                        if current_status == 'attendance':
+                            print("成功进入考勤页面！")
+                        else:
+                            print("未成功进入考勤页面，尝试其他方法...")
+                            # 尝试使用更精确的坐标点击
+                            for offset in [(-20, -10), (0, -10), (20, -10), (-20, 0), (0, 0), (20, 0), (-20, 10), (0, 10), (20, 10)]:
+                                offset_x = x + offset[0]
+                                offset_y = y + offset[1]
+                                print(f"尝试点击坐标: ({offset_x}, {offset_y})")
+                                subprocess.run([self.adb_path, "shell", "input", "tap", str(offset_x), str(offset_y)], check=True)
+                                time.sleep(3)
+                                
+                                # 再次检查页面状态
+                                current_status = self.check_page_status()
+                                if current_status == 'attendance':
+                                    print("成功进入考勤页面！")
+                                    break
+                    else:
+                        print("未找到考勤选项，尝试直接使用坐标点击")
+                        # 尝试使用更精确的坐标点击，重点点击顶部区域
+                        current_status = 'home'
+                        for x in [400, 450, 500, 550, 600, 650, 700, 750, 800]:
+                            for y in [100, 120, 140, 160, 180, 200]:
+                                print(f"尝试点击坐标: ({x}, {y})")
+                                subprocess.run([self.adb_path, "shell", "input", "tap", str(x), str(y)], check=True)
+                                time.sleep(2)
+                                
+                                # 再次检查页面状态，看是否已经进入考勤页面
+                                current_status = self.check_page_status()
+                                if current_status == 'attendance':
+                                    print("成功进入考勤页面！")
+                                    break
+                            if current_status == 'attendance':
+                                break
+                except Exception as xml_error:
+                    print(f"分析XML文件失败: {xml_error}")
+                    # 尝试使用预设坐标点击
+                    print("尝试使用预设坐标点击考勤选项...")
+                    preset_coordinates = [(400, 100), (450, 120), (500, 140), (550, 160), (600, 180), (650, 200), (700, 100), (750, 120), (800, 140)]
+                    current_status = 'home'
+                    for coord in preset_coordinates:
+                        print(f"尝试点击坐标: ({coord[0]}, {coord[1]})")
+                        subprocess.run([self.adb_path, "shell", "input", "tap", str(coord[0]), str(coord[1])], check=True)
+                        time.sleep(2)
+                        
+                        # 再次检查页面状态，看是否已经进入考勤页面
+                        current_status = self.check_page_status()
+                        if current_status == 'attendance':
+                            print("成功进入考勤页面！")
+                            break
+            elif page_status == 'attendance':
+                # 已经是考勤页面，刷新一下当前页
+                print("当前已经是考勤页面，刷新页面...")
+                # 可以通过点击页面空白处或下拉刷新来刷新页面
+                # 这里使用下拉刷新的方式
+                subprocess.run([self.adb_path, "shell", "input", "swipe", "720", "500", "720", "1500", "1000"], check=True)
+                time.sleep(2)
+                print("页面刷新完成")
             
             # 截图当前页面
             test_screenshot = os.path.join(self.screenshot_dir, "test_attendance_page.png")
@@ -260,7 +314,14 @@ class CheckinSkill:
             subprocess.run([self.adb_path, "pull", "/sdcard/test_screenshot.png", test_screenshot], check=True)
             print(f"截图已保存至: {test_screenshot}")
             
-            return True
+            # 再次检查页面状态，确保最终在考勤页面
+            final_status = self.check_page_status()
+            if final_status == 'attendance':
+                print("导航到考勤页面成功！")
+                return True
+            else:
+                print(f"最终页面状态不是考勤页面，导航失败: {final_status}")
+                return False
         except Exception as e:
             print(f"导航到考勤页面失败: {e}")
             return False
@@ -306,10 +367,124 @@ class CheckinSkill:
     
     def check_button_status(self):
         """检查打卡按钮状态"""
-        # 这里需要实现UI元素识别，检查按钮状态
-        # 暂时返回"签到"，实际使用时需要实现
         print("检查打卡按钮状态...")
-        return "签到"
+        try:
+            # 使用UIAutomator dump界面层级
+            subprocess.run([self.adb_path, "shell", "uiautomator", "dump", "/sdcard/window_dump.xml"], check=True)
+            time.sleep(1)
+            
+            # 拉取XML文件到本地
+            xml_path = os.path.join(self.screenshot_dir, "window_dump.xml")
+            subprocess.run([self.adb_path, "pull", "/sdcard/window_dump.xml", xml_path], check=True)
+            
+            # 读取并分析XML文件
+            with open(xml_path, 'r', encoding='utf-8') as f:
+                xml_content = f.read()
+            
+            # 查找包含"签到"或"签退"的按钮
+            if '签退' in xml_content:
+                print("检测到签退按钮")
+                return "签退"
+            elif '签到' in xml_content:
+                print("检测到签到按钮")
+                return "签到"
+            else:
+                print("未检测到打卡按钮")
+                return "未知"
+        except Exception as e:
+            print(f"检查按钮状态失败: {e}")
+            return "签到"
+    
+    def get_current_activity(self):
+        """获取当前页面的Activity名称"""
+        try:
+            # 尝试使用不同的命令获取当前Activity
+            # 命令1: dumpsys activity top
+            result = subprocess.run([self.adb_path, "shell", "dumpsys", "activity", "top"], capture_output=True, text=True)
+            activity_lines = [line for line in result.stdout.split('\n') if 'ACTIVITY' in line]
+            if activity_lines:
+                # 解析Activity名称，格式通常为：ACTIVITY com.package.name/.ActivityName ...
+                activity_info = activity_lines[0].strip()
+                # 提取Activity名称部分
+                match = re.search(r'ACTIVITY\s+([^\s]+)', activity_info)
+                if match:
+                    activity_name = match.group(1)
+                    print(f"当前Activity (dumpsys top): {activity_name}")
+                    return activity_name
+            
+            # 命令2: dumpsys activity activities
+            result = subprocess.run([self.adb_path, "shell", "dumpsys", "activity", "activities"], capture_output=True, text=True)
+            # 查找最新的Activity
+            lines = result.stdout.split('\n')
+            for i, line in enumerate(lines):
+                if 'Running activities' in line:
+                    # 查找第一个Activity
+                    for j in range(i+1, len(lines)):
+                        if 'ActivityRecord' in lines[j]:
+                            match = re.search(r'ActivityRecord\{[^}]+\} ([^\s]+)', lines[j])
+                            if match:
+                                activity_name = match.group(1)
+                                print(f"当前Activity (dumpsys activities): {activity_name}")
+                                return activity_name
+                            break
+            
+            return None
+        except Exception as e:
+            print(f"获取当前Activity失败: {e}")
+            return None
+    
+    def check_page_status(self):
+        """判断当前页面状态
+        Returns:
+            str: 页面状态，可能的值：'attendance', 'home', 'other'
+        """
+        current_activity = self.get_current_activity()
+        print(f"当前Activity: {current_activity}")
+        
+        # 无论当前Activity是什么，都尝试通过UIAutomator判断是否是考勤页面
+        try:
+            # 使用UIAutomator dump界面层级
+            subprocess.run([self.adb_path, "shell", "uiautomator", "dump", "/sdcard/window_dump.xml"], check=True)
+            time.sleep(1)
+            
+            # 拉取XML文件到本地
+            xml_path = os.path.join(self.screenshot_dir, "window_dump.xml")
+            subprocess.run([self.adb_path, "pull", "/sdcard/window_dump.xml", xml_path], check=True)
+            
+            # 读取并分析XML文件
+            with open(xml_path, 'r', encoding='utf-8') as f:
+                xml_content = f.read()
+            
+            # 检查是否是纷享销客应用
+            if 'com.facishare.fs' in xml_content:
+                print("检测到纷享销客应用界面")
+                
+                # 检查是否包含考勤相关的文本
+                if '考勤' in xml_content:
+                    print("通过UIAutomator检测到考勤页面")
+                    return 'attendance'
+                
+                # 如果是纷享销客应用，但不是考勤页面，就认为是首页
+                print("检测到纷享销客应用首页")
+                return 'home'
+        except Exception as e:
+            print(f"通过UIAutomator检测页面状态失败: {e}")
+        
+        # 其他页面
+        return 'other'
+    
+    def go_to_home(self):
+        """回到首页"""
+        print("回到首页...")
+        try:
+            # 使用am start命令启动首页Activity
+            subprocess.run([self.adb_path, "shell", "am", "start", "-n", f"{self.package_name}/{self.activity_name}"], check=True)
+            time.sleep(3)  # 等待页面加载
+            print("成功回到首页")
+            return True
+        except Exception as e:
+            print(f"回到首页失败: {e}")
+            return False
     
     def perform_checkin(self):
         """执行打卡操作"""
@@ -344,32 +519,51 @@ class CheckinSkill:
             
             # 查找打卡记录
             import re
-            # 查找包含打卡时间的元素
-            time_patterns = [
-                r'\d{2}:\d{2}',  # 时间格式，如 12:02
-                r'\d{4}-\d{2}-\d{2}',  # 日期格式，如 2024-03-20
-                r'签到',  # 签到
-                r'签退',  # 签退
-                r'正常',  # 正常状态
-                r'迟到',  # 迟到状态
-                r'早退'   # 早退状态
-            ]
+            
+            # 查找包含"智能签到"的记录
+            smart_checkin_pattern = r'text="(\d{2}:\d{2} 智能签到)"[^>]+bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"'
+            smart_checkin_matches = re.findall(smart_checkin_pattern, xml_content)
             
             checkin_records = []
-            # 查找包含时间和状态的元素
-            lines = xml_content.split('\n')
-            for i, line in enumerate(lines):
-                for pattern in time_patterns:
-                    if re.search(pattern, line):
-                        # 提取包含打卡信息的行
-                        record = line.strip()
-                        # 查找相邻的行，获取更多信息
-                        if i > 0:
-                            record += " " + lines[i-1].strip()
-                        if i < len(lines) - 1:
-                            record += " " + lines[i+1].strip()
-                        checkin_records.append(record)
-                        break
+            
+            # 处理智能签到记录
+            for match in smart_checkin_matches:
+                checkin_time = match[0]
+                # 查找对应的状态
+                status_pattern = r'text="(正常|迟到|早退)"[^>]+bounds="\[\d+,\d+\]\[\d+,\d+\]"'
+                status_match = re.search(status_pattern, xml_content)
+                status = status_match.group(1) if status_match else "未知"
+                
+                # 查找对应的地点
+                location_pattern = r'text="([^"\n]+)"[^>]+resource-id="com\.facishare\.fs:id/check_text"'
+                location_match = re.search(location_pattern, xml_content)
+                location = location_match.group(1) if location_match else "未知地点"
+                
+                record = f"{checkin_time}，状态: {status}，地点: {location}"
+                checkin_records.append(record)
+            
+            # 如果没有找到智能签到记录，尝试查找其他打卡记录
+            if not checkin_records:
+                # 查找包含时间和签到/签退的记录
+                time_check_pattern = r'text="(\d{2}:\d{2})"[^>]+bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"'
+                time_matches = re.findall(time_check_pattern, xml_content)
+                
+                for match in time_matches:
+                    checkin_time = match[0]
+                    # 查找附近的签到/签退文本
+                    context_start = max(0, xml_content.find(match[0]) - 500)
+                    context_end = min(len(xml_content), xml_content.find(match[0]) + 500)
+                    context = xml_content[context_start:context_end]
+                    
+                    if '签到' in context:
+                        record_type = "签到"
+                    elif '签退' in context:
+                        record_type = "签退"
+                    else:
+                        record_type = "打卡"
+                    
+                    record = f"{checkin_time} {record_type}"
+                    checkin_records.append(record)
             
             # 去重
             checkin_records = list(set(checkin_records))
@@ -445,6 +639,11 @@ class CheckinSkill:
         print(f"当前时间: {status_info['current_time']}")
         print(f"按钮状态: {status_info['button_status']}")
         print(f"打卡记录数量: {status_info['checkin_records_count']}")
+        # 输出具体的打卡记录
+        if checkin_records:
+            print("打卡记录:")
+            for i, record in enumerate(checkin_records):
+                print(f"  {i+1}. {record}")
         
         # 检查是否可以打卡
         if not location_status:
