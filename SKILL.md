@@ -2,15 +2,22 @@
 
 ## 功能描述
 
-自动执行纷享销客应用的考勤打卡操作，包括检查模拟器状态、启动应用、进入考勤页面、检查打卡状态、执行打卡并汇报结果。
+自动执行纷享销客应用的考勤打卡操作，包括检查模拟器状态、启动应用、进入考勤页面、检查打卡状态、执行打卡并汇报结果。支持自动确认和集成到Agent中使用。
 
 ## 目录结构
 
 ```
 checkin-skill/
-├── references/      # 参考资料
+├── .codebuddy/      # CodeBuddy相关文件
+├── .trae/           # Trae相关文件
+├── .workbuddy/      # WorkBuddy相关文件
 ├── scripts/         # 脚本文件
-│   └── skill_checkin.py  # 打卡主脚本
+│   ├── __init__.py                  # 包初始化文件
+│   ├── agent_integration_example.py  # Agent集成示例
+│   ├── auto_checkin.py               # 自动打卡脚本
+│   └── skill_checkin.py              # 打卡主脚本
+├── screenshots/      # 截图保存目录
+├── .gitignore        # Git忽略文件
 └── SKILL.md         # Skill说明文档
 ```
 
@@ -31,6 +38,13 @@ cd checkin-skill/scripts
 python skill_checkin.py
 ```
 
+### 自动打卡
+
+```bash
+cd checkin-skill/scripts
+python auto_checkin.py
+```
+
 ### 集成到Agent中
 
 ```python
@@ -42,7 +56,7 @@ def user_confirm_callback(status_info):
     print(f"当前时间: {status_info['current_time']}")
     print(f"按钮状态: {status_info['button_status']}")
     # 这里可以实现agent的确认逻辑
-    return input("是否执行打卡？(y/n): ").lower() == 'y'
+    return True  # 自动确认
 
 result = run_checkin(user_confirm_callback)
 if result['success']:
@@ -56,12 +70,19 @@ else:
 1. **检查模拟器状态**：自动检查模拟器是否运行，如未运行则启动
 2. **启动纷享销客**：通过ADB命令启动应用
 3. **进入考勤页面**：自动导航到考勤页面
+   - 如果在企信页面，先点击应用按钮
+   - 如果在应用页面，点击考勤选项
+   - 如果已经在考勤页面，刷新页面
 4. **检查打卡状态**：
    - 截图检查定位状态
    - 检查当前时间是否在打卡范围内
    - 检查打卡按钮状态
+   - 检测打卡记录
 5. **用户确认**：向用户展示状态并请求确认
 6. **执行打卡**：根据时间范围执行相应的打卡操作
+   - 早上：签到1次
+   - 中午：签退1次+签到1次
+   - 晚上：签退1次
 7. **汇报结果**：截图记录并汇报打卡结果
 
 ## 打卡时间规则
@@ -75,16 +96,17 @@ else:
 ## 注意事项
 
 1. **定位要求**：必须显示「已进入地点考勤范围」才能打卡
-2. **时间限制**：不在规定时间范围内只汇报情况，不补签
+2. **时间限制**：不在规定时间范围内只汇报情况，不补签（视为打卡完成）
 3. **中午特殊处理**：12:00-13:00会自动执行签退1次+签到1次
-4. **用户确认**：执行打卡前会请求用户确认
+4. **用户确认**：执行打卡前会请求用户确认（可自动确认）
 5. **截图记录**：打卡前后都会截图记录状态
 6. **模拟器启动**：如模拟器未运行，会自动尝试启动
+7. **页面导航**：支持从企信页面和应用页面导航到考勤页面
 
 ## 配置说明
 
-- `package_name`：纷享销客应用包名（默认为com.fxiaoke）
-- `activity_name`：启动Activity（默认为com.fxiaoke.fkassistant.activity.MainActivity）
+- `package_name`：纷享销客应用包名（默认为com.facishare.fs）
+- `activity_name`：启动Activity（默认为com.fxiaoke.host.IndexActivity）
 - `screenshot_dir`：截图保存目录（默认为./screenshots）
 - `emulator_name`：模拟器名称（默认为Nexus_5X_API_30）
 
@@ -95,6 +117,7 @@ else:
 - **导航失败**：可能是UI布局不同，需要调整点击坐标
 - **定位失败**：确保模拟器已开启定位服务
 - **模拟器启动失败**：检查Android SDK是否安装，模拟器名称是否正确
+- **打卡按钮点击失败**：可能是按钮位置变化，脚本会自动查找按钮位置
 
 ## 扩展建议
 
@@ -103,6 +126,7 @@ else:
 3. **日志增强**：添加更详细的日志记录，便于问题排查
 4. **定时任务**：添加定时打卡功能，自动在规定时间执行打卡
 5. **多设备支持**：支持多台模拟器同时打卡
+6. **配置文件**：添加配置文件，方便用户自定义参数
 
 ## 免责声明
 
