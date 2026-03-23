@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.pyc
+
+# Screenshots
+screenshots/*.png
+screenshots/*.xml
+
+# IDE
+.vscode/
+.idea/
+
+# System
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Temporary files
+*.tmp
+*.temp
