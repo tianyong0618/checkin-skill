@@ -1,0 +1,89 @@
+{
+  "general": {
+    "package_name": "com.facishare.fs",
+    "activity_name": "com.fxiaoke.host.IndexActivity",
+    "emulator_name": "daka",
+    "screenshot_dir": "../screenshots"
+  },
+  "adb": {
+    "common_paths": [
+      "adb",
+      "/Users/tianyong/Library/Android/sdk/platform-tools/adb",
+      "~/Library/Android/sdk/platform-tools/adb",
+      "C:\\Users\\{USERNAME}\\AppData\\Local\\Android\\Sdk\\platform-tools\\adb.exe",
+      "/usr/local/share/android-sdk/platform-tools/adb"
+    ]
+  },
+  "emulator": {
+    "paths": {
+      "darwin": [
+        "~/Library/Android/sdk/emulator/emulator",
+        "/usr/local/share/android-sdk/emulator/emulator",
+        "/opt/android-sdk/emulator/emulator"
+      ],
+      "windows": [
+        "C:\\Users\\{USERNAME}\\AppData\\Local\\Android\\Sdk\\emulator\\emulator.exe",
+        "D:\\Android\\Sdk\\emulator\\emulator.exe"
+      ],
+      "linux": [
+        "~/Android/Sdk/emulator/emulator",
+        "/usr/local/android-sdk/emulator/emulator",
+        "/opt/android-sdk/emulator/emulator"
+      ]
+    }
+  },
+  "coordinates": {
+    "app_button": [
+      [900, 2304],
+      [950, 2304],
+      [1000, 2304],
+      [900, 2350],
+      [950, 2350],
+      [1000, 2350]
+    ],
+    "preset_attendance": [
+      [400, 100],
+      [450, 120],
+      [500, 140],
+      [550, 160],
+      [600, 180],
+      [650, 200],
+      [700, 100],
+      [750, 120],
+      [800, 140]
+    ],
+    "default_checkin": [720, 1280]
+  },
+  "time_ranges": {
+    "morning_checkin": {
+      "start": "08:30",
+      "end": "09:00"
+    },
+    "noon_checkin": {
+      "start": "12:00",
+      "end": "13:00"
+    },
+    "evening_checkout": {
+      "start": "18:00",
+      "end": "19:00"
+    }
+  },
+  "ui": {
+    "texts": {
+      "attendance": "考勤",
+      "checkin": "签到",
+      "checkout": "签退",
+      "qixin": "企信",
+      "app": "应用"
+    }
+  },
+  "sleep_times": {
+    "emulator_start": 30,
+    "app_start": 10,
+    "monkey_activate": 5,
+    "ui_dump": 1,
+    "page_load": 3,
+    "click_wait": 2,
+    "checkin_wait": 5
+  }
+}
