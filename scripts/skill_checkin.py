@@ -641,6 +641,7 @@ class CheckinSkill:
             return result
         
         if time_range == "out_of_range":
+            result["success"] = True
             result["message"] = "当前时间不在打卡范围内，只汇报情况，不补签"
             print(result["message"])
             return result
