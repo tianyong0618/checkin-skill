@@ -485,10 +485,41 @@ class CheckinSkill:
         """执行打卡操作"""
         print("执行打卡操作...")
         try:
-            # 点击打卡按钮（适配1440*2560分辨率）
-            subprocess.run([self.adb_path, "shell", "input", "tap", "720", "1280"], check=True)
-            time.sleep(2)
-            return True
+            # 使用UIAutomator dump界面层级，找到实际的打卡按钮位置
+            subprocess.run([self.adb_path, "shell", "uiautomator", "dump", "/sdcard/window_dump.xml"], check=True)
+            time.sleep(1)
+            
+            # 拉取XML文件到本地
+            xml_path = os.path.join(self.screenshot_dir, "window_dump.xml")
+            subprocess.run([self.adb_path, "pull", "/sdcard/window_dump.xml", xml_path], check=True)
+            
+            # 读取并分析XML文件，查找打卡按钮
+            with open(xml_path, 'r', encoding='utf-8') as f:
+                xml_content = f.read()
+            
+            # 查找包含"签到"或"签退"的按钮
+            import re
+            match = re.search(r'text=\"(签到|签退)\"[^>]+bounds=\"\[(\d+),(\d+)\]\[(\d+),(\d+)\]\"', xml_content)
+            if match:
+                left = int(match.group(2))
+                top = int(match.group(3))
+                right = int(match.group(4))
+                bottom = int(match.group(5))
+                # 计算中心点坐标
+                x = (left + right) // 2
+                y = (top + bottom) // 2
+                print(f"找到打卡按钮，坐标: ({x}, {y})")
+                
+                # 点击打卡按钮
+                subprocess.run([self.adb_path, "shell", "input", "tap", str(x), str(y)], check=True)
+                time.sleep(2)
+                return True
+            else:
+                # 如果没有找到按钮，使用默认坐标
+                print("未找到打卡按钮，使用默认坐标")
+                subprocess.run([self.adb_path, "shell", "input", "tap", "720", "1280"], check=True)
+                time.sleep(2)
+                return True
         except Exception as e:
             print(f"打卡操作失败: {e}")
             return False
