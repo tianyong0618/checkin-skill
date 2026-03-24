@@ -640,12 +640,8 @@ class CheckinSkill:
                     if current_status == 'attendance':
                         break
         elif page_status == 'attendance':
-            # 已经是考勤页面，刷新一下当前页
-            print("当前已经是考勤页面，刷新页面...")
-            # 可以通过点击页面空白处或下拉刷新来刷新页面
-            # 这里使用下拉刷新的方式
-            self.execute_adb_command(["shell", "input", "swipe", "720", "500", "720", "1500", "1000"])
-            time.sleep(2)
+            # 已经是考勤页面，直接进行日期检查
+            print("当前已经是考勤页面")
         
         # 截图当前页面
         test_screenshot = self.take_screenshot("test_attendance_page.png")
@@ -919,22 +915,19 @@ class CheckinSkill:
             today_str = today.strftime("%m月%d日")
             # 移除前导零
             today_str = today_str.lstrip('0')
-            today_weekday = "星期" + "日一二三四五六"[today.weekday()]
             
-            print(f"当前日期: {today_str} {today_weekday}")
+            print(f"当前日期: {today_str}")
             
-            # 查找页面中的日期信息
-            # 匹配格式："3月23日星期一"
-            date_pattern = r'(\d+月\d+日)\s*(星期[一二三四五六日])'
+            # 查找页面中的日期信息，只匹配日期数字部分
+            date_pattern = r'(\d+月\d+日)'
             date_match = re.search(date_pattern, xml_content)
             
             if date_match:
                 date_str = date_match.group(1)
-                weekday_str = date_match.group(2)
                 
-                print(f"页面显示日期: {date_str} {weekday_str}")
+                print(f"页面显示日期: {date_str}")
                 
-                # 检查是否为当天日期（主要以日期为准，星期作为参考）
+                # 检查是否为当天日期
                 if date_str == today_str:
                     print("页面显示的是当天日期")
                     return True
@@ -954,14 +947,8 @@ class CheckinSkill:
             list: 打卡记录列表
         """
         try:
-            # 先滚动页面，确保所有打卡记录都能被捕获
-            print("滚动页面以显示所有打卡记录...")
-            # 向上滚动页面，使用更大的滚动距离
-            self.execute_adb_command(["shell", "input", "swipe", "720", "1800", "720", "200", "1000"])
-            time.sleep(2)
-            # 再次滚动，确保顶部的打卡记录也能被捕获
-            self.execute_adb_command(["shell", "input", "swipe", "720", "1500", "720", "100", "1000"])
-            time.sleep(2)
+            # 直接使用当前页面，不滚动避免影响内容
+            print("检测打卡记录...")
             
             # 使用UIAutomator dump界面层级
             self.dump_ui_hierarchy("/sdcard/attendance_dump.xml")
@@ -978,33 +965,24 @@ class CheckinSkill:
             
             checkin_records = []
             
-            # 查找所有包含时间的节点
-            time_nodes = re.findall(r'text="(\d{2}:\d{2})"[^>]+bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"', xml_content)
+            # 查找所有包含打卡信息的节点（使用更精确的匹配）
+            checkin_pattern = r'text="(\d{2}:\d{2} (智能签到|签到|签退))"[^>]+resource-id="com\.facishare\.fs:id/check_time"'
+            checkin_matches = re.findall(checkin_pattern, xml_content)
             
-            # 查找所有包含打卡类型的节点
-            checkin_types = []
-            # 查找智能签到
-            smart_checkin_matches = re.findall(r'text="(\d{2}:\d{2} 智能签到)"', xml_content)
-            checkin_types.extend(smart_checkin_matches)
-            # 查找签到
-            checkin_matches = re.findall(r'text="(\d{2}:\d{2} 签到)"', xml_content)
-            checkin_types.extend(checkin_matches)
-            # 查找签退
-            checkout_matches = re.findall(r'text="(\d{2}:\d{2} 签退)"', xml_content)
-            checkin_types.extend(checkout_matches)
+            print(f"找到的打卡记录匹配: {checkin_matches}")
             
             # 处理所有找到的打卡类型
-            for checkin_type in checkin_types:
-                # 提取时间和类型
-                time_match = re.search(r'(\d{2}:\d{2})', checkin_type)
-                type_match = re.search(r'(智能签到|签到|签退)', checkin_type)
+            for match in checkin_matches:
+                checkin_text = match[0]
+                record_type = match[1]
                 
-                if time_match and type_match:
+                # 提取时间
+                time_match = re.search(r'(\d{2}:\d{2})', checkin_text)
+                if time_match:
                     checkin_time = time_match.group(1)
-                    record_type = type_match.group(1)
                     
-                    # 查找对应的状态
-                    status_pattern = r'text="(正常|迟到|早退)"'
+                    # 查找对应的状态（在同一父节点中查找）
+                    status_pattern = r'text="(正常|迟到|早退)"[^>]+resource-id="com\.facishare\.fs:id/check_status_1"'
                     status_match = re.search(status_pattern, xml_content)
                     status = status_match.group(1) if status_match else "未知"
                     
@@ -1016,25 +994,10 @@ class CheckinSkill:
                     record = f"{checkin_time} {record_type}，状态: {status}，地点: {location}"
                     checkin_records.append(record)
             
-            # 特殊处理：如果没有找到记录，手动添加08:22智能签到记录
-            # 这是一个临时解决方案，基于用户提供的截图信息
-            if len(checkin_records) < 3:
-                # 查找状态和地点信息
-                status_pattern = r'text="(正常|迟到|早退)"'
-                status_match = re.search(status_pattern, xml_content)
-                status = status_match.group(1) if status_match else "正常"
-                
-                location_pattern = r'text="([^"\n]+)"[^>]+resource-id="com\.facishare\.fs:id/check_text"'
-                location_match = re.search(location_pattern, xml_content)
-                location = location_match.group(1) if location_match else "北京华普亿方科技集团股份有限公司"
-                
-                # 添加08:22智能签到记录
-                morning_record = f"08:22 智能签到，状态: {status}，地点: {location}"
-                checkin_records.append(morning_record)
-            
             # 去重
             checkin_records = list(set(checkin_records))
             
+            print(f"最终打卡记录: {checkin_records}")
             return checkin_records
         except Exception as e:
             print(f"检测打卡记录时出错: {e}")
