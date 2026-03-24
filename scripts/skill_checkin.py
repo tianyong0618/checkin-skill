@@ -63,7 +63,9 @@ class CheckinSkill:
         # 初始化UI层级缓存
         self.ui_cache = {}
         self.cache_timestamp = 0
-        self.cache_ttl = 5  # 缓存有效期（秒）
+        self.cache_ttl = 10  # 延长缓存有效期到10秒
+        self.cache_hits = 0
+        self.cache_misses = 0
     
     def cleanup_temp_files(self):
         """清理临时文件"""
@@ -74,24 +76,45 @@ class CheckinSkill:
             for file_path in temp_files:
                 try:
                     self.execute_adb_command(["shell", "rm", "-f", file_path], check=False)
+                    print(f"清理设备临时文件: {file_path}")
                 except Exception as e:
-                    pass
+                    print(f"清理设备临时文件失败: {file_path}, {e}")
             
-            # 清理本地截图目录中的旧文件（保留最近7天的文件）
+            # 清理本地截图目录中的旧文件（保留最近3天的文件）
             if os.path.exists(self.screenshot_dir):
                 import datetime
-                seven_days_ago = datetime.datetime.now() - datetime.timedelta(days=7)
+                three_days_ago = datetime.datetime.now() - datetime.timedelta(days=3)
                 
+                # 统计清理前的文件数量和大小
+                before_count = 0
+                before_size = 0
+                for filename in os.listdir(self.screenshot_dir):
+                    file_path = os.path.join(self.screenshot_dir, filename)
+                    if os.path.isfile(file_path):
+                        before_count += 1
+                        before_size += os.path.getsize(file_path)
+                
+                # 清理旧文件
+                cleaned_count = 0
+                cleaned_size = 0
                 for filename in os.listdir(self.screenshot_dir):
                     file_path = os.path.join(self.screenshot_dir, filename)
                     if os.path.isfile(file_path):
                         file_mtime = datetime.datetime.fromtimestamp(os.path.getmtime(file_path))
-                        if file_mtime < seven_days_ago:
+                        if file_mtime < three_days_ago:
                             try:
+                                file_size = os.path.getsize(file_path)
                                 os.unlink(file_path)
-                                print(f"清理旧截图: {filename}")
+                                print(f"清理旧截图: {filename} ({file_size / 1024:.1f}KB)")
+                                cleaned_count += 1
+                                cleaned_size += file_size
                             except Exception as e:
-                                pass
+                                print(f"清理旧截图失败: {filename}, {e}")
+                
+                # 统计清理后的文件数量和大小
+                after_count = before_count - cleaned_count
+                after_size = before_size - cleaned_size
+                print(f"截图目录清理完成: 清理前 {before_count} 个文件 ({before_size / 1024:.1f}KB)，清理后 {after_count} 个文件 ({after_size / 1024:.1f}KB)，清理了 {cleaned_count} 个文件 ({cleaned_size / 1024:.1f}KB)")
         except Exception as e:
             print(f"清理临时文件失败: {e}")
     
@@ -217,13 +240,27 @@ class CheckinSkill:
             subprocess.CompletedProcess: 命令执行结果
         """
         full_command = [self.adb_path] + command
-        result = subprocess.run(
-            full_command,
-            capture_output=capture_output,
-            text=True,
-            check=check
-        )
-        return result
+        try:
+            print(f"执行ADB命令: {' '.join(full_command)}")
+            result = subprocess.run(
+                full_command,
+                capture_output=capture_output,
+                text=True,
+                check=check
+            )
+            if capture_output and result.stdout:
+                print(f"命令输出: {result.stdout.strip()}")
+            return result
+        except subprocess.CalledProcessError as e:
+            print(f"ADB命令执行失败: {e}")
+            if e.stdout:
+                print(f"命令输出: {e.stdout}")
+            if e.stderr:
+                print(f"错误输出: {e.stderr}")
+            raise
+        except Exception as e:
+            print(f"执行ADB命令时发生异常: {e}")
+            raise
     
     @retry(max_attempts=3, delay=1, backoff=1.5)
     def dump_ui_hierarchy(self, output_file="/sdcard/window_dump.xml"):
@@ -237,6 +274,7 @@ class CheckinSkill:
         current_time = time.time()
         if output_file in self.ui_cache and (current_time - self.cache_timestamp) < self.cache_ttl:
             print(f"使用缓存的UI层级: {output_file}")
+            self.cache_hits += 1
             return True
         
         # 执行dump操作
@@ -249,6 +287,7 @@ class CheckinSkill:
         if result is not None:
             self.ui_cache[output_file] = True
             self.cache_timestamp = current_time
+            self.cache_misses += 1
         
         return result is not None
     
@@ -261,8 +300,18 @@ class CheckinSkill:
         Returns:
             bool: 是否成功
         """
-        result = self.execute_adb_command(["pull", remote_path, local_path])
-        return result is not None
+        try:
+            print(f"从设备拉取文件: {remote_path} -> {local_path}")
+            result = self.execute_adb_command(["pull", remote_path, local_path])
+            if result:
+                print(f"文件拉取成功: {local_path}")
+                return True
+            else:
+                print("文件拉取失败: 命令执行失败")
+                return False
+        except Exception as e:
+            print(f"拉取文件失败: {e}")
+            return False
     
     @retry(max_attempts=3, delay=1, backoff=1.5)
     def push_file(self, local_path, remote_path):
@@ -273,8 +322,23 @@ class CheckinSkill:
         Returns:
             bool: 是否成功
         """
-        result = self.execute_adb_command(["push", local_path, remote_path])
-        return result is not None
+        try:
+            print(f"推送文件到设备: {local_path} -> {remote_path}")
+            # 检查本地文件是否存在
+            if not os.path.exists(local_path):
+                print(f"推送文件失败: 本地文件不存在: {local_path}")
+                return False
+            
+            result = self.execute_adb_command(["push", local_path, remote_path])
+            if result:
+                print(f"文件推送成功: {remote_path}")
+                return True
+            else:
+                print("文件推送失败: 命令执行失败")
+                return False
+        except Exception as e:
+            print(f"推送文件失败: {e}")
+            return False
     
     def parse_ui_xml(self, xml_path):
         """解析UI XML文件
@@ -293,8 +357,9 @@ class CheckinSkill:
             file_mtime = os.path.getmtime(xml_path)
             
             # 检查缓存是否有效
-            if xml_path in self.ui_cache and self.ui_cache[xml_path]['mtime'] == file_mtime:
+            if xml_path in self.ui_cache and isinstance(self.ui_cache[xml_path], dict) and self.ui_cache[xml_path]['mtime'] == file_mtime:
                 print(f"使用缓存的XML内容: {xml_path}")
+                self.cache_hits += 1
                 return self.ui_cache[xml_path]['content']
             
             # 读取文件内容
@@ -306,6 +371,7 @@ class CheckinSkill:
                 'content': content,
                 'mtime': file_mtime
             }
+            self.cache_misses += 1
             
             return content
         except Exception as e:
@@ -320,11 +386,20 @@ class CheckinSkill:
         Returns:
             tuple: (left, top, right, bottom) 或 None
         """
+        # 缓存查找结果，避免重复查找
+        cache_key = f"find_element:{text}"
+        if cache_key in self.ui_cache and isinstance(self.ui_cache[cache_key], tuple):
+            print(f"使用缓存的元素位置: {text}")
+            return self.ui_cache[cache_key]
+        
         try:
             pattern = r'text="' + re.escape(text) + r'"[^>]+bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"'
             match = re.search(pattern, xml_content)
             if match:
-                return (int(match.group(1)), int(match.group(2)), int(match.group(3)), int(match.group(4)))
+                bounds = (int(match.group(1)), int(match.group(2)), int(match.group(3)), int(match.group(4)))
+                # 缓存查找结果
+                self.ui_cache[cache_key] = bounds
+                return bounds
             return None
         except Exception as e:
             print(f"查找元素失败: {e}")
@@ -357,7 +432,7 @@ class CheckinSkill:
             return ((left + right) // 2, (top + bottom) // 2)
         return None
     
-    def wait_for_element(self, text, timeout=30, interval=1):
+    def wait_for_element(self, text, timeout=30, interval=0.5):
         """等待元素出现
         Args:
             text: 元素文本
@@ -385,7 +460,13 @@ class CheckinSkill:
                 if bounds:
                     return bounds
                 
-                time.sleep(interval)
+                # 动态调整间隔，随着时间增加减少间隔
+                elapsed = time.time() - start_time
+                if elapsed < timeout * 0.5:
+                    time.sleep(interval)
+                else:
+                    # 接近超时，减少间隔以提高响应速度
+                    time.sleep(interval / 2)
             except Exception as e:
                 print(f"等待元素时出错: {e}")
                 time.sleep(interval)
@@ -404,6 +485,8 @@ class CheckinSkill:
         screenshot_config = self.config.get('screenshot', {})
         enabled = screenshot_config.get('enabled', False)
         debug = screenshot_config.get('debug', True)
+        compress = screenshot_config.get('compress', True)
+        quality = screenshot_config.get('quality', 50)
         
         # 如果截图未启用且不是debug模式，直接返回
         if not enabled and not debug:
@@ -416,7 +499,22 @@ class CheckinSkill:
             self.execute_adb_command(["shell", "screencap", "/sdcard/screenshot.png"])
             # 拉取到本地
             self.execute_adb_command(["pull", "/sdcard/screenshot.png", filepath])
-            print(f"截图已保存: {filepath}")
+            
+            # 压缩截图
+            if compress:
+                try:
+                    from PIL import Image
+                    img = Image.open(filepath)
+                    # 压缩图片
+                    img.save(filepath, 'JPEG', quality=quality)
+                    print(f"截图已压缩并保存: {filepath}")
+                except ImportError:
+                    print("Pillow库未安装，跳过压缩")
+                except Exception as e:
+                    print(f"压缩截图失败: {e}")
+            else:
+                print(f"截图已保存: {filepath}")
+            
             return filepath
         except Exception as e:
             print(f"截图失败: {e}")
@@ -459,10 +557,21 @@ class CheckinSkill:
             print("ADB不可用，请确保ADB已安装")
             return False
         
+        # 缓存设备状态，避免重复执行ADB命令
+        if hasattr(self, '_device_status') and (time.time() - self._device_status['timestamp']) < 5:
+            print(f"使用缓存的设备状态: {self._device_status['devices']}")
+            return len(self._device_status['devices']) > 0
+        
         result = self.execute_adb_command(["devices"])
         if result:
             devices = result.stdout.strip().split('\n')[1:]
             running_devices = [device.split('\t')[0] for device in devices if 'device' in device]
+            
+            # 缓存设备状态
+            self._device_status = {
+                'devices': running_devices,
+                'timestamp': time.time()
+            }
             
             if running_devices:
                 print(f"发现运行中的设备: {running_devices}")
@@ -515,11 +624,24 @@ class CheckinSkill:
     
     def is_app_running(self):
         """检查应用是否已经在运行"""
+        # 缓存应用运行状态，避免重复执行ADB命令
+        if hasattr(self, '_app_running_status') and (time.time() - self._app_running_status['timestamp']) < 3:
+            print(f"使用缓存的应用运行状态: {self._app_running_status['running']}")
+            return self._app_running_status['running']
+        
         try:
             result = self.execute_adb_command(["shell", "dumpsys", "activity", "activities"])
+            running = False
             if result:
-                return self.package_name in result.stdout
-            return False
+                running = self.package_name in result.stdout
+            
+            # 缓存应用运行状态
+            self._app_running_status = {
+                'running': running,
+                'timestamp': time.time()
+            }
+            
+            return running
         except Exception as e:
             print(f"检查应用运行状态失败: {e}")
             return False
@@ -544,22 +666,29 @@ class CheckinSkill:
         # 使用基于事件的等待机制，等待应用启动
         print("等待应用启动...")
         start_time = time.time()
-        timeout = self.config['sleep_times'].get('app_start', 10)
+        timeout = self.config['sleep_times'].get('app_start', 8)  # 减少超时时间
+        interval = 0.5  # 减少检查间隔
+        
         while time.time() - start_time < timeout:
             if self.is_app_running():
                 print("应用已成功启动")
                 break
-            time.sleep(1)
+            # 动态调整间隔
+            elapsed = time.time() - start_time
+            if elapsed < timeout * 0.5:
+                time.sleep(interval)
+            else:
+                time.sleep(interval / 2)
         
         # 尝试使用 monkey 命令激活应用
         self.execute_adb_command(["shell", "monkey", "-p", self.package_name, "-c", "android.intent.category.LAUNCHER", "1"])
         
-        # 等待应用完全激活
-        time.sleep(self.config['sleep_times'].get('monkey_activate', 3))
+        # 等待应用完全激活（减少等待时间）
+        time.sleep(self.config['sleep_times'].get('monkey_activate', 2))
         
         # 模拟点击屏幕，确保应用在前台
         self.execute_adb_command(["shell", "input", "tap", "500", "500"])
-        time.sleep(self.config['sleep_times'].get('click_wait', 2))
+        time.sleep(self.config['sleep_times'].get('click_wait', 1))  # 减少等待时间
         
         return True
     
@@ -567,6 +696,8 @@ class CheckinSkill:
     def navigate_to_attendance(self):
         """进入考勤页面"""
         print("进入考勤页面...")
+        xml_path = os.path.join(self.screenshot_dir, "window_dump.xml")
+        
         # 第一步：判断当前页面状态
         page_status = self.check_page_status()
         
@@ -592,14 +723,9 @@ class CheckinSkill:
             self.execute_adb_command(["shell", "screencap", "/sdcard/app_screenshot.png"])
             self.execute_adb_command(["pull", "/sdcard/app_screenshot.png", app_screenshot])
             
-            # 使用UIAutomator查找考勤选项
+            # 使用UIAutomator查找考勤选项（只dump一次）
             self.dump_ui_hierarchy()
-            
-            # 拉取XML文件到本地
-            xml_path = os.path.join(self.screenshot_dir, "window_dump.xml")
             self.pull_file("/sdcard/window_dump.xml", xml_path)
-            
-            # 读取并分析XML文件
             xml_content = self.parse_ui_xml(xml_path)
             
             # 检查是否是企信页面（首页），如果是，先点击"应用"按钮
@@ -616,19 +742,6 @@ class CheckinSkill:
                     print(f"找到应用按钮，坐标: ({x}, {y})")
                     self.execute_adb_command(["shell", "input", "tap", str(x), str(y)])
                     time.sleep(3)
-                    
-                    # 再次dump界面层级
-                    self.dump_ui_hierarchy()
-                    self.pull_file("/sdcard/window_dump.xml", xml_path)
-                    
-                    # 重新读取XML文件
-                    xml_content = self.parse_ui_xml(xml_path)
-                    
-                    # 检查是否成功进入应用页面
-                    app_text = self.config['ui']['texts']['app']
-                    attendance_text = self.config['ui']['texts']['attendance']
-                    if app_text in xml_content and attendance_text in xml_content:
-                        print("成功进入应用页面！")
                 else:
                     # 备用方案：使用配置的坐标
                     app_button_coordinates = self.config['coordinates']['app_button']
@@ -637,24 +750,20 @@ class CheckinSkill:
                         print(f"尝试点击应用按钮，坐标: ({x}, {y})")
                         self.execute_adb_command(["shell", "input", "tap", str(x), str(y)])
                         time.sleep(3)
-                        
-                        # 再次dump界面层级
-                        self.dump_ui_hierarchy()
-                        self.pull_file("/sdcard/window_dump.xml", xml_path)
-                        
-                        # 重新读取XML文件
-                        xml_content = self.parse_ui_xml(xml_path)
-                        
-                        # 检查是否成功进入应用页面
-                        app_text = self.config['ui']['texts']['app']
-                        attendance_text = self.config['ui']['texts']['attendance']
-                        if app_text in xml_content and attendance_text in xml_content:
-                            print("成功进入应用页面！")
-                            break
+                        # 不立即检查，减少dump次数
+            
+            # 等待应用页面加载
+            time.sleep(self.config['sleep_times'].get('page_load', 3))
+            
+            # 再次dump界面层级，查找考勤选项
+            self.dump_ui_hierarchy()
+            self.pull_file("/sdcard/window_dump.xml", xml_path)
+            xml_content = self.parse_ui_xml(xml_path)
             
             # 查找包含"考勤"的元素
             attendance_text = self.config['ui']['texts']['attendance']
             attendance_bounds = self.find_element_by_text(xml_content, attendance_text)
+            
             if attendance_bounds:
                 # 计算中心点坐标
                 x, y = self.get_element_center(attendance_bounds)
@@ -867,40 +976,53 @@ class CheckinSkill:
         Returns:
             str: 页面状态，可能的值：'attendance', 'home', 'other'
         """
+        # 缓存页面状态，避免重复执行ADB命令
+        if hasattr(self, '_page_status') and (time.time() - self._page_status['timestamp']) < 5:
+            print(f"使用缓存的页面状态: {self._page_status['status']}")
+            return self._page_status['status']
+        
         # 直接使用UIAutomator判断页面状态，减少对Activity的依赖
         try:
-            # 使用UIAutomator dump界面层级
+            # 使用UIAutomator dump界面层级（会使用缓存）
             self.dump_ui_hierarchy()
             
             # 拉取XML文件到本地
             xml_path = os.path.join(self.screenshot_dir, "window_dump.xml")
             self.pull_file("/sdcard/window_dump.xml", xml_path)
             
-            # 读取并分析XML文件
+            # 读取并分析XML文件（会使用缓存）
             xml_content = self.parse_ui_xml(xml_path)
             
             # 检查是否是纷享销客应用
             if 'com.facishare.fs' in xml_content:
                 # 检查是否包含考勤相关的文本，并且包含打卡时间、状态等考勤页面特有的元素
                 if '考勤' in xml_content and ('智能签到' in xml_content or '签退' in xml_content or '已进入地点考勤范围' in xml_content):
-                    return 'attendance'
+                    status = 'attendance'
                 
                 # 检查是否是应用页面
                 elif '应用' in xml_content and '考勤' in xml_content:
-                    return 'home'
+                    status = 'home'
                 
                 # 检查是否是企信页面（首页）
                 elif '企信' in xml_content:
-                    return 'home'
+                    status = 'home'
                 
                 # 其他纷享销客页面
                 else:
-                    return 'other'
+                    status = 'other'
+            else:
+                status = 'other'
+            
+            # 缓存页面状态
+            self._page_status = {
+                'status': status,
+                'timestamp': time.time()
+            }
+            
+            return status
         except Exception as e:
-            pass
-        
-        # 其他页面
-        return 'other'
+            print(f"检查页面状态失败: {e}")
+            return 'other'
     
     def go_to_home(self):
         """回到首页"""
@@ -1268,6 +1390,11 @@ class CheckinSkill:
         if updated_checkin_records:
             checkin_records = updated_checkin_records
         result["message"] = build_message(f"打卡完成！结果截图已保存至: {result_screenshot}")
+        # 输出缓存统计信息
+        total_cache = self.cache_hits + self.cache_misses
+        cache_hit_rate = (self.cache_hits / total_cache * 100) if total_cache > 0 else 0
+        print(f"缓存统计: 命中={self.cache_hits}, 未命中={self.cache_misses}, 命中率={cache_hit_rate:.1f}%")
+        
         print(result["message"])
         print("=== 打卡流程结束 ===")
         return result

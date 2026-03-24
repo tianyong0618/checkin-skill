@@ -88,7 +88,9 @@
   },
   "screenshot": {
     "enabled": false,
-    "debug": true
+    "debug": true,
+    "compress": true,
+    "quality": 50
   },
   "ui": {
     "texts": {
