@@ -63,9 +63,10 @@ class CheckinSkill:
         # 初始化UI层级缓存
         self.ui_cache = {}
         self.cache_timestamp = 0
-        self.cache_ttl = 10  # 延长缓存有效期到10秒
+        self.cache_ttl = 15  # 延长缓存有效期到15秒
         self.cache_hits = 0
         self.cache_misses = 0
+        self.file_cache = {}  # 文件拉取缓存
     
     def cleanup_temp_files(self):
         """清理临时文件"""
@@ -268,14 +269,14 @@ class CheckinSkill:
         Args:
             output_file: 导出文件路径
         Returns:
-            bool: 是否成功
+            tuple: (bool, bool) - (是否成功, 是否使用了缓存)
         """
         # 检查缓存是否有效
         current_time = time.time()
         if output_file in self.ui_cache and (current_time - self.cache_timestamp) < self.cache_ttl:
             print(f"使用缓存的UI层级: {output_file}")
             self.cache_hits += 1
-            return True
+            return True, True
         
         # 执行dump操作
         print(f"导出UI层级到: {output_file}")
@@ -289,7 +290,7 @@ class CheckinSkill:
             self.cache_timestamp = current_time
             self.cache_misses += 1
         
-        return result is not None
+        return result is not None, False
     
     @retry(max_attempts=3, delay=1, backoff=1.5)
     def pull_file(self, remote_path, local_path):
@@ -300,11 +301,28 @@ class CheckinSkill:
         Returns:
             bool: 是否成功
         """
+        # 检查文件缓存
+        cache_key = f"file:{remote_path}:{local_path}"
+        current_time = time.time()
+        
+        if cache_key in self.file_cache:
+            cache_entry = self.file_cache[cache_key]
+            if (current_time - cache_entry['timestamp']) < self.cache_ttl and os.path.exists(local_path):
+                print(f"使用缓存的文件: {local_path}")
+                self.cache_hits += 1
+                return True
+        
         try:
             print(f"从设备拉取文件: {remote_path} -> {local_path}")
             result = self.execute_adb_command(["pull", remote_path, local_path])
             if result:
                 print(f"文件拉取成功: {local_path}")
+                # 更新文件缓存
+                self.file_cache[cache_key] = {
+                    'timestamp': current_time,
+                    'path': local_path
+                }
+                self.cache_misses += 1
                 return True
             else:
                 print("文件拉取失败: 命令执行失败")
@@ -505,6 +523,9 @@ class CheckinSkill:
                 try:
                     from PIL import Image
                     img = Image.open(filepath)
+                    # 将RGBA转换为RGB格式
+                    if img.mode == 'RGBA':
+                        img = img.convert('RGB')
                     # 压缩图片
                     img.save(filepath, 'JPEG', quality=quality)
                     print(f"截图已压缩并保存: {filepath}")
@@ -512,6 +533,19 @@ class CheckinSkill:
                     print("Pillow库未安装，跳过压缩")
                 except Exception as e:
                     print(f"压缩截图失败: {e}")
+                    # 尝试使用PNG格式保存
+                    try:
+                        if 'img' in locals():
+                            # 尝试使用PNG格式保存
+                            png_path = filepath.replace('.png', '.png')
+                            img.save(png_path, 'PNG')
+                            print(f"使用PNG格式保存截图: {png_path}")
+                        else:
+                            print("无法使用PNG格式保存，图片对象不存在")
+                    except Exception as e2:
+                        print(f"保存PNG格式失败: {e2}")
+                        # 尝试不压缩，直接使用原始截图
+                        print("使用原始截图，跳过压缩")
             else:
                 print(f"截图已保存: {filepath}")
             
@@ -724,8 +758,9 @@ class CheckinSkill:
             self.execute_adb_command(["pull", "/sdcard/app_screenshot.png", app_screenshot])
             
             # 使用UIAutomator查找考勤选项（只dump一次）
-            self.dump_ui_hierarchy()
-            self.pull_file("/sdcard/window_dump.xml", xml_path)
+            success, used_cache = self.dump_ui_hierarchy()
+            if not used_cache:
+                self.pull_file("/sdcard/window_dump.xml", xml_path)
             xml_content = self.parse_ui_xml(xml_path)
             
             # 检查是否是企信页面（首页），如果是，先点击"应用"按钮
@@ -749,15 +784,18 @@ class CheckinSkill:
                         x, y = coord
                         print(f"尝试点击应用按钮，坐标: ({x}, {y})")
                         self.execute_adb_command(["shell", "input", "tap", str(x), str(y)])
-                        time.sleep(3)
+                        # 动态等待，根据操作类型调整等待时间
+                        time.sleep(self.config['sleep_times'].get('click_wait', 1))
+                        
                         # 不立即检查，减少dump次数
             
             # 等待应用页面加载
             time.sleep(self.config['sleep_times'].get('page_load', 3))
             
             # 再次dump界面层级，查找考勤选项
-            self.dump_ui_hierarchy()
-            self.pull_file("/sdcard/window_dump.xml", xml_path)
+            success, used_cache = self.dump_ui_hierarchy()
+            if not used_cache:
+                self.pull_file("/sdcard/window_dump.xml", xml_path)
             xml_content = self.parse_ui_xml(xml_path)
             
             # 查找包含"考勤"的元素
@@ -984,11 +1022,12 @@ class CheckinSkill:
         # 直接使用UIAutomator判断页面状态，减少对Activity的依赖
         try:
             # 使用UIAutomator dump界面层级（会使用缓存）
-            self.dump_ui_hierarchy()
+            success, used_cache = self.dump_ui_hierarchy()
             
-            # 拉取XML文件到本地
+            # 拉取XML文件到本地（如果没有使用缓存）
             xml_path = os.path.join(self.screenshot_dir, "window_dump.xml")
-            self.pull_file("/sdcard/window_dump.xml", xml_path)
+            if not used_cache:
+                self.pull_file("/sdcard/window_dump.xml", xml_path)
             
             # 读取并分析XML文件（会使用缓存）
             xml_content = self.parse_ui_xml(xml_path)
@@ -1134,11 +1173,12 @@ class CheckinSkill:
             print("检测打卡记录...")
             
             # 使用UIAutomator dump界面层级
-            self.dump_ui_hierarchy("/sdcard/attendance_dump.xml")
+            success, used_cache = self.dump_ui_hierarchy("/sdcard/attendance_dump.xml")
             
-            # 拉取XML文件到本地
+            # 拉取XML文件到本地（如果没有使用缓存）
             xml_path = os.path.join(self.screenshot_dir, "attendance_dump.xml")
-            self.pull_file("/sdcard/attendance_dump.xml", xml_path)
+            if not used_cache:
+                self.pull_file("/sdcard/attendance_dump.xml", xml_path)
             
             # 读取并分析XML文件
             xml_content = self.parse_ui_xml(xml_path)
@@ -1296,11 +1336,10 @@ class CheckinSkill:
         
         # 第四步：检查打卡状态
         screenshot_path = self.take_screenshot("before_checkin.png")
-        if not screenshot_path:
-            result["message"] = "无法截图，流程终止"
-            print(result["message"])
-            return result
-        result["screenshots"]["before"] = screenshot_path
+        if screenshot_path:
+            result["screenshots"]["before"] = screenshot_path
+        else:
+            print("截图已禁用，跳过截图操作")
         
         location_status = self.check_location_status(screenshot_path)
         time_range = self.check_time_range()

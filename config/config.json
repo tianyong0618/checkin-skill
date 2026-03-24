@@ -78,17 +78,17 @@
     }
   },
   "sleep_times": {
-    "emulator_start": 30,
-    "app_start": 10,
-    "monkey_activate": 5,
-    "ui_dump": 1,
-    "page_load": 3,
-    "click_wait": 2,
-    "checkin_wait": 5
+    "emulator_start": 20,
+    "app_start": 8,
+    "monkey_activate": 2,
+    "ui_dump": 0.5,
+    "page_load": 2,
+    "click_wait": 1,
+    "checkin_wait": 3
   },
   "screenshot": {
     "enabled": false,
-    "debug": true,
+    "debug": false,
     "compress": true,
     "quality": 50
   },
