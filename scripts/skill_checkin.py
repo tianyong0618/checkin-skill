@@ -1134,8 +1134,8 @@ class CheckinSkill:
         print(f"当前时间: {status_info['current_time']}")
         print(f"按钮状态: {status_info['button_status']}")
         print(f"打卡记录数量: {status_info['checkin_records_count']}")
-        # 输出具体的打卡记录
-        if checkin_records:
+        # 只在需要时输出打卡记录，避免与消息中的记录重复
+        if time_range != "out_of_range" and checkin_records:
             print("打卡记录:")
             for i, record in enumerate(checkin_records):
                 print(f"  {i+1}. {record}")
@@ -1146,9 +1146,19 @@ class CheckinSkill:
             print(result["message"])
             return result
         
+        # 构建包含打卡记录的消息
+        def build_message(base_message):
+            """构建包含打卡记录的消息"""
+            message = base_message
+            if checkin_records:
+                message += "\n最新打卡记录:"
+                for i, record in enumerate(checkin_records):
+                    message += f"\n  {i+1}. {record}"
+            return message
+        
         if time_range == "out_of_range":
             result["success"] = True
-            result["message"] = "当前时间不在打卡范围内，只汇报情况，不补签"
+            result["message"] = build_message("当前时间不在打卡范围内，只汇报情况，不补签")
             print(result["message"])
             return result
         
@@ -1161,7 +1171,7 @@ class CheckinSkill:
             user_confirm = user_confirm.lower() == 'y'
         
         if not user_confirm:
-            result["message"] = "用户取消打卡"
+            result["message"] = build_message("用户取消打卡")
             print(result["message"])
             return result
         
@@ -1171,19 +1181,19 @@ class CheckinSkill:
             print("执行中午打卡流程: 签退1次 + 签到1次")
             # 第一次点击（签退）
             if not self.perform_checkin():
-                result["message"] = "签退失败"
+                result["message"] = build_message("签退失败")
                 print(result["message"])
                 return result
             time.sleep(2)
             # 第二次点击（签到）
             if not self.perform_checkin():
-                result["message"] = "签到失败"
+                result["message"] = build_message("签到失败")
                 print(result["message"])
                 return result
         else:
             # 其他时间只需要打卡1次
             if not self.perform_checkin():
-                result["message"] = "打卡失败"
+                result["message"] = build_message("打卡失败")
                 print(result["message"])
                 return result
         
@@ -1192,7 +1202,11 @@ class CheckinSkill:
         result_screenshot = self.take_screenshot("after_checkin.png")
         result["screenshots"]["after"] = result_screenshot
         result["success"] = True
-        result["message"] = f"打卡完成！结果截图已保存至: {result_screenshot}"
+        # 重新检测打卡记录，确保显示最新的
+        updated_checkin_records = self.detect_checkin_records()
+        if updated_checkin_records:
+            checkin_records = updated_checkin_records
+        result["message"] = build_message(f"打卡完成！结果截图已保存至: {result_screenshot}")
         print(result["message"])
         print("=== 打卡流程结束 ===")
         return result
