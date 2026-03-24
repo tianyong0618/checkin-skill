@@ -59,6 +59,11 @@ class CheckinSkill:
         
         # 清理临时文件
         self.cleanup_temp_files()
+        
+        # 初始化UI层级缓存
+        self.ui_cache = {}
+        self.cache_timestamp = 0
+        self.cache_ttl = 5  # 缓存有效期（秒）
     
     def cleanup_temp_files(self):
         """清理临时文件"""
@@ -228,9 +233,23 @@ class CheckinSkill:
         Returns:
             bool: 是否成功
         """
+        # 检查缓存是否有效
+        current_time = time.time()
+        if output_file in self.ui_cache and (current_time - self.cache_timestamp) < self.cache_ttl:
+            print(f"使用缓存的UI层级: {output_file}")
+            return True
+        
+        # 执行dump操作
+        print(f"导出UI层级到: {output_file}")
         result = self.execute_adb_command(["shell", "uiautomator", "dump", output_file])
         ui_dump_time = self.config['sleep_times'].get('ui_dump', 1)
         time.sleep(ui_dump_time)  # 等待导出完成
+        
+        # 更新缓存
+        if result is not None:
+            self.ui_cache[output_file] = True
+            self.cache_timestamp = current_time
+        
         return result is not None
     
     @retry(max_attempts=3, delay=1, backoff=1.5)
@@ -264,9 +283,31 @@ class CheckinSkill:
         Returns:
             str: XML内容
         """
+        # 检查文件是否存在
+        if not os.path.exists(xml_path):
+            print(f"XML文件不存在: {xml_path}")
+            return ""
+        
         try:
+            # 获取文件修改时间
+            file_mtime = os.path.getmtime(xml_path)
+            
+            # 检查缓存是否有效
+            if xml_path in self.ui_cache and self.ui_cache[xml_path]['mtime'] == file_mtime:
+                print(f"使用缓存的XML内容: {xml_path}")
+                return self.ui_cache[xml_path]['content']
+            
+            # 读取文件内容
             with open(xml_path, 'r', encoding='utf-8') as f:
-                return f.read()
+                content = f.read()
+            
+            # 更新缓存
+            self.ui_cache[xml_path] = {
+                'content': content,
+                'mtime': file_mtime
+            }
+            
+            return content
         except Exception as e:
             print(f"解析XML文件失败: {e}")
             return ""
@@ -326,16 +367,17 @@ class CheckinSkill:
             tuple: (left, top, right, bottom) 或 None
         """
         start_time = time.time()
+        xml_path = os.path.join(self.screenshot_dir, "window_dump.xml")
+        
         while time.time() - start_time < timeout:
             try:
-                # 导出UI层级
+                # 导出UI层级（会使用缓存）
                 self.dump_ui_hierarchy()
                 
                 # 拉取XML文件到本地
-                xml_path = os.path.join(self.screenshot_dir, "window_dump.xml")
                 self.pull_file("/sdcard/window_dump.xml", xml_path)
                 
-                # 读取并分析XML文件
+                # 读取并分析XML文件（会使用缓存）
                 xml_content = self.parse_ui_xml(xml_path)
                 
                 # 查找元素
@@ -358,12 +400,23 @@ class CheckinSkill:
         Returns:
             str: 保存路径或None
         """
+        # 检查截图配置
+        screenshot_config = self.config.get('screenshot', {})
+        enabled = screenshot_config.get('enabled', False)
+        debug = screenshot_config.get('debug', True)
+        
+        # 如果截图未启用且不是debug模式，直接返回
+        if not enabled and not debug:
+            print(f"截图已禁用，跳过: {filename}")
+            return None
+        
         try:
             filepath = os.path.join(self.screenshot_dir, filename)
             # 截图到设备
             self.execute_adb_command(["shell", "screencap", "/sdcard/screenshot.png"])
             # 拉取到本地
             self.execute_adb_command(["pull", "/sdcard/screenshot.png", filepath])
+            print(f"截图已保存: {filepath}")
             return filepath
         except Exception as e:
             print(f"截图失败: {e}")
@@ -615,7 +668,8 @@ class CheckinSkill:
                 current_status = self.check_page_status()
                 if current_status != 'attendance':
                     # 尝试使用更精确的坐标点击
-                    for offset in [(-20, -10), (0, -10), (20, -10), (-20, 0), (0, 0), (20, 0), (-20, 10), (0, 10), (20, 10)]:
+                    offsets = self.config['ui']['offsets']
+                    for offset in offsets:
                         offset_x = x + offset[0]
                         offset_y = y + offset[1]
                         self.execute_adb_command(["shell", "input", "tap", str(offset_x), str(offset_y)])
@@ -628,8 +682,12 @@ class CheckinSkill:
             else:
                 # 尝试使用更精确的坐标点击，重点点击顶部区域
                 current_status = 'home'
-                for x in [400, 450, 500, 550, 600, 650, 700, 750, 800]:
-                    for y in [100, 120, 140, 160, 180, 200]:
+                attendance_coords = self.config['ui']['attendance_coordinates']
+                x_coords = attendance_coords['x']
+                y_coords = attendance_coords['y']
+                
+                for x in x_coords:
+                    for y in y_coords:
                         self.execute_adb_command(["shell", "input", "tap", str(x), str(y)])
                         time.sleep(2)
                         
@@ -679,11 +737,14 @@ class CheckinSkill:
             self.pull_file("/sdcard/window_dump.xml", xml_path)
             xml_content = self.parse_ui_xml(xml_path)
             
-            if "已进入地点考勤范围" in xml_content:
-                print("已进入地点考勤范围")
+            location_in_range = self.config['ui']['texts']['location_in_range']
+            location_out_of_range = self.config['ui']['texts']['location_out_of_range']
+            
+            if location_in_range in xml_content:
+                print(location_in_range)
                 return True
-            elif "未进入地点考勤范围" in xml_content:
-                print("未进入地点考勤范围")
+            elif location_out_of_range in xml_content:
+                print(location_out_of_range)
                 return False
             else:
                 print("无法确定定位状态，默认返回True")

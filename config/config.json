@@ -85,5 +85,35 @@
     "page_load": 3,
     "click_wait": 2,
     "checkin_wait": 5
+  },
+  "screenshot": {
+    "enabled": false,
+    "debug": true
+  },
+  "ui": {
+    "texts": {
+      "attendance": "考勤",
+      "checkin": "签到",
+      "checkout": "签退",
+      "qixin": "企信",
+      "app": "应用",
+      "location_in_range": "已进入地点考勤范围",
+      "location_out_of_range": "未进入地点考勤范围"
+    },
+    "offsets": [
+      [-20, -10],
+      [0, -10],
+      [20, -10],
+      [-20, 0],
+      [0, 0],
+      [20, 0],
+      [-20, 10],
+      [0, 10],
+      [20, 10]
+    ],
+    "attendance_coordinates": {
+      "x": [400, 450, 500, 550, 600, 650, 700, 750, 800],
+      "y": [100, 120, 140, 160, 180, 200]
+    }
   }
 }
