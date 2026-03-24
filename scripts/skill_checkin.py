@@ -897,6 +897,57 @@ class CheckinSkill:
             time.sleep(click_wait_time)
             return True
     
+    def check_attendance_date(self):
+        """检查考勤页面显示的日期是否为当天
+        Returns:
+            bool: 是否为当天日期
+        """
+        print("检查考勤页面日期...")
+        try:
+            # 使用UIAutomator dump界面层级
+            self.dump_ui_hierarchy()
+            
+            # 拉取XML文件到本地
+            xml_path = os.path.join(self.screenshot_dir, "window_dump.xml")
+            self.pull_file("/sdcard/window_dump.xml", xml_path)
+            
+            # 读取并分析XML文件
+            xml_content = self.parse_ui_xml(xml_path)
+            
+            # 获取当前日期
+            today = datetime.datetime.now()
+            today_str = today.strftime("%m月%d日")
+            # 移除前导零
+            today_str = today_str.lstrip('0')
+            today_weekday = "星期" + "日一二三四五六"[today.weekday()]
+            
+            print(f"当前日期: {today_str} {today_weekday}")
+            
+            # 查找页面中的日期信息
+            # 匹配格式："3月23日星期一"
+            date_pattern = r'(\d+月\d+日)\s*(星期[一二三四五六日])'
+            date_match = re.search(date_pattern, xml_content)
+            
+            if date_match:
+                date_str = date_match.group(1)
+                weekday_str = date_match.group(2)
+                
+                print(f"页面显示日期: {date_str} {weekday_str}")
+                
+                # 检查是否为当天日期（主要以日期为准，星期作为参考）
+                if date_str == today_str:
+                    print("页面显示的是当天日期")
+                    return True
+                else:
+                    print("页面显示的不是当天日期")
+                    return False
+            else:
+                print("未找到日期信息")
+                return False
+        except Exception as e:
+            print(f"检查日期时出错: {e}")
+            return False
+    
     def detect_checkin_records(self):
         """检测考勤页面中的打卡记录
         Returns:
@@ -1021,6 +1072,75 @@ class CheckinSkill:
         # 第三步：进入考勤页面
         if not self.navigate_to_attendance():
             result["message"] = "无法进入考勤页面，流程终止"
+            print(result["message"])
+            return result
+        
+        # 检查考勤页面日期是否为当天
+        max_retries = 3
+        retry_count = 0
+        is_today = False
+        
+        while retry_count < max_retries and not is_today:
+            is_today = self.check_attendance_date()
+            if not is_today:
+                print("页面显示的不是当天日期，尝试切换到当天...")
+                # 尝试下拉刷新
+                self.execute_adb_command(["shell", "input", "swipe", "720", "500", "720", "1500", "1000"])
+                time.sleep(3)
+                
+                # 查找并点击"下一天"按钮
+                self.dump_ui_hierarchy()
+                xml_path = os.path.join(self.screenshot_dir, "window_dump.xml")
+                self.pull_file("/sdcard/window_dump.xml", xml_path)
+                xml_content = self.parse_ui_xml(xml_path)
+                
+                # 查找"the_next_day"按钮
+                next_day_pattern = r'resource-id="com\.facishare\.fs:id/the_next_day"[^>]+bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"'
+                next_day_match = re.search(next_day_pattern, xml_content)
+                
+                if next_day_match:
+                    left = int(next_day_match.group(1))
+                    top = int(next_day_match.group(2))
+                    right = int(next_day_match.group(3))
+                    bottom = int(next_day_match.group(4))
+                    # 点击下一天按钮
+                    x = (left + right) // 2
+                    y = (top + bottom) // 2
+                    print(f"点击下一天按钮，坐标: ({x}, {y})")
+                    self.execute_adb_command(["shell", "input", "tap", str(x), str(y)])
+                    time.sleep(3)
+                else:
+                    # 如果没有找到下一天按钮，尝试点击日期文本区域
+                    date_text_pattern = r'resource-id="com\.facishare\.fs:id/date_text"[^>]+bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"'
+                    date_text_match = re.search(date_text_pattern, xml_content)
+                    if date_text_match:
+                        left = int(date_text_match.group(1))
+                        top = int(date_text_match.group(2))
+                        right = int(date_text_match.group(3))
+                        bottom = int(date_text_match.group(4))
+                        # 点击日期文本
+                        x = (left + right) // 2
+                        y = (top + bottom) // 2
+                        print(f"点击日期文本，坐标: ({x}, {y})")
+                        self.execute_adb_command(["shell", "input", "tap", str(x), str(y)])
+                        time.sleep(2)
+                        
+                        # 尝试点击"今天"选项
+                        self.dump_ui_hierarchy()
+                        self.pull_file("/sdcard/window_dump.xml", xml_path)
+                        xml_content = self.parse_ui_xml(xml_path)
+                        
+                        today_bounds = self.find_element_by_text(xml_content, "今天")
+                        if today_bounds:
+                            x, y = self.get_element_center(today_bounds)
+                            print(f"点击今天选项，坐标: ({x}, {y})")
+                            self.execute_adb_command(["shell", "input", "tap", str(x), str(y)])
+                            time.sleep(3)
+                
+                retry_count += 1
+        
+        if not is_today:
+            result["message"] = "无法切换到当天日期，流程终止"
             print(result["message"])
             return result
         
