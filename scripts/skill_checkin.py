@@ -687,8 +687,12 @@ class CheckinSkill:
         
         # 检查应用是否已经在运行
         if self.is_app_running():
-            print("应用已经在运行，无需重新启动")
-            return True
+            print("应用已经在运行，重启应用以确保考勤日期为当天")
+            # 停止应用
+            self.execute_adb_command(["shell", "am", "force-stop", self.package_name])
+            print("应用已停止")
+            # 等待一段时间，确保应用完全停止
+            time.sleep(2)
         
         # 尝试解锁屏幕（如果锁屏）
         self.execute_adb_command(["shell", "input", "keyevent", "82"])
@@ -721,7 +725,8 @@ class CheckinSkill:
         time.sleep(self.config['sleep_times'].get('monkey_activate', 2))
         
         # 模拟点击屏幕，确保应用在前台
-        self.execute_adb_command(["shell", "input", "tap", "500", "500"])
+        # 点击屏幕底部中央位置，避免点击到具体内容
+        self.execute_adb_command(["shell", "input", "tap", "720", "2400"])
         time.sleep(self.config['sleep_times'].get('click_wait', 1))  # 减少等待时间
         
         return True
