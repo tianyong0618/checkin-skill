@@ -1174,7 +1174,6 @@ class CheckinSkill:
             list: 打卡记录列表
         """
         try:
-            # 直接使用当前页面，不滚动避免影响内容
             print("检测打卡记录...")
             
             # 使用UIAutomator dump界面层级
@@ -1193,9 +1192,23 @@ class CheckinSkill:
             
             checkin_records = []
             
+            # 查找考勤记录列表的容器元素
+            # 首先尝试找到考勤记录列表的父容器
+            container_pattern = r'<node[^>]+resource-id="com\.facishare\.fs:id/checkin_list"[^>]*>([\s\S]*?)</node>'
+            container_match = re.search(container_pattern, xml_content)
+            
+            if container_match:
+                # 如果找到容器，在容器内查找打卡记录
+                container_content = container_match.group(1)
+                print("找到考勤记录容器，在容器内查找打卡记录")
+            else:
+                # 如果没有找到容器，使用整个XML内容
+                container_content = xml_content
+                print("未找到考勤记录容器，在整个页面中查找打卡记录")
+            
             # 查找所有包含打卡信息的节点（使用更精确的匹配）
             checkin_pattern = r'text="(\d{2}:\d{2} (智能签到|签到|签退))"[^>]+resource-id="com\.facishare\.fs:id/check_time"'
-            checkin_matches = re.findall(checkin_pattern, xml_content)
+            checkin_matches = re.findall(checkin_pattern, container_content)
             
             print(f"找到的打卡记录匹配: {checkin_matches}")
             
@@ -1211,12 +1224,12 @@ class CheckinSkill:
                     
                     # 查找对应的状态（在同一父节点中查找）
                     status_pattern = r'text="(正常|迟到|早退)"[^>]+resource-id="com\.facishare\.fs:id/check_status_1"'
-                    status_match = re.search(status_pattern, xml_content)
+                    status_match = re.search(status_pattern, container_content)
                     status = status_match.group(1) if status_match else "未知"
                     
                     # 查找对应的地点
                     location_pattern = r'text="([^"\n]+)"[^>]+resource-id="com\.facishare\.fs:id/check_text"'
-                    location_match = re.search(location_pattern, xml_content)
+                    location_match = re.search(location_pattern, container_content)
                     location = location_match.group(1) if location_match else "未知地点"
                     
                     record = f"{checkin_time} {record_type}，状态: {status}，地点: {location}"
@@ -1267,71 +1280,9 @@ class CheckinSkill:
             return result
         
         # 检查考勤页面日期是否为当天
-        max_retries = 3
-        retry_count = 0
-        is_today = False
-        
-        while retry_count < max_retries and not is_today:
-            is_today = self.check_attendance_date()
-            if not is_today:
-                print("页面显示的不是当天日期，尝试切换到当天...")
-                # 尝试下拉刷新
-                self.execute_adb_command(["shell", "input", "swipe", "720", "500", "720", "1500", "1000"])
-                time.sleep(3)
-                
-                # 查找并点击"下一天"按钮
-                self.dump_ui_hierarchy()
-                xml_path = os.path.join(self.screenshot_dir, "window_dump.xml")
-                self.pull_file("/sdcard/window_dump.xml", xml_path)
-                xml_content = self.parse_ui_xml(xml_path)
-                
-                # 查找"the_next_day"按钮
-                next_day_pattern = r'resource-id="com\.facishare\.fs:id/the_next_day"[^>]+bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"'
-                next_day_match = re.search(next_day_pattern, xml_content)
-                
-                if next_day_match:
-                    left = int(next_day_match.group(1))
-                    top = int(next_day_match.group(2))
-                    right = int(next_day_match.group(3))
-                    bottom = int(next_day_match.group(4))
-                    # 点击下一天按钮
-                    x = (left + right) // 2
-                    y = (top + bottom) // 2
-                    print(f"点击下一天按钮，坐标: ({x}, {y})")
-                    self.execute_adb_command(["shell", "input", "tap", str(x), str(y)])
-                    time.sleep(3)
-                else:
-                    # 如果没有找到下一天按钮，尝试点击日期文本区域
-                    date_text_pattern = r'resource-id="com\.facishare\.fs:id/date_text"[^>]+bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"'
-                    date_text_match = re.search(date_text_pattern, xml_content)
-                    if date_text_match:
-                        left = int(date_text_match.group(1))
-                        top = int(date_text_match.group(2))
-                        right = int(date_text_match.group(3))
-                        bottom = int(date_text_match.group(4))
-                        # 点击日期文本
-                        x = (left + right) // 2
-                        y = (top + bottom) // 2
-                        print(f"点击日期文本，坐标: ({x}, {y})")
-                        self.execute_adb_command(["shell", "input", "tap", str(x), str(y)])
-                        time.sleep(2)
-                        
-                        # 尝试点击"今天"选项
-                        self.dump_ui_hierarchy()
-                        self.pull_file("/sdcard/window_dump.xml", xml_path)
-                        xml_content = self.parse_ui_xml(xml_path)
-                        
-                        today_bounds = self.find_element_by_text(xml_content, "今天")
-                        if today_bounds:
-                            x, y = self.get_element_center(today_bounds)
-                            print(f"点击今天选项，坐标: ({x}, {y})")
-                            self.execute_adb_command(["shell", "input", "tap", str(x), str(y)])
-                            time.sleep(3)
-                
-                retry_count += 1
-        
+        is_today = self.check_attendance_date()
         if not is_today:
-            result["message"] = "无法切换到当天日期，流程终止"
+            result["message"] = "考勤页面日期不是当天，流程终止"
             print(result["message"])
             return result
         
