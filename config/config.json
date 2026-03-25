@@ -68,15 +68,6 @@
       "end": "19:00"
     }
   },
-  "ui": {
-    "texts": {
-      "attendance": "考勤",
-      "checkin": "签到",
-      "checkout": "签退",
-      "qixin": "企信",
-      "app": "应用"
-    }
-  },
   "sleep_times": {
     "emulator_start": 20,
     "app_start": 8,
