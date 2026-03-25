@@ -1,7 +1,4 @@
-***
-
 name: checkin-skill
-
 description: 自动执行纷享销客应用的考勤打卡操作，支持模拟器状态检查、应用启动、考勤页面导航、打卡状态检查和自动打卡
 
 # checkin-skill
