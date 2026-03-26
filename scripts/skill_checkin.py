@@ -8,6 +8,7 @@ import re
 import platform
 import json
 import functools
+import requests
 
 def retry(max_attempts=3, delay=2, backoff=1.5, exceptions=(Exception,)):
     """重试装饰器
@@ -689,6 +690,123 @@ class CheckinSkill:
                 return False
         return False
     
+    def find_avdmanager(self):
+        """查找avdmanager工具路径"""
+        # 从配置中读取ADB路径，avdmanager通常在同一目录的上一级
+        common_paths = self.config['adb']['common_paths']
+        
+        for path in common_paths:
+            # 替换{USERNAME}占位符
+            if "{USERNAME}" in path:
+                path = path.format(USERNAME=os.getenv("USERNAME", ""))
+            
+            # 展开~符号
+            expanded_path = os.path.expanduser(path)
+            try:
+                # 检查路径是否存在
+                if os.path.exists(expanded_path):
+                    # avdmanager通常在platform-tools的上一级/bin目录
+                    avdmanager_path = os.path.join(os.path.dirname(os.path.dirname(expanded_path)), "tools", "bin", "avdmanager")
+                    # 对于Windows系统
+                    if platform.system().lower() == "windows":
+                        avdmanager_path += ".bat"
+                    if os.path.exists(avdmanager_path):
+                        print(f"找到avdmanager工具: {avdmanager_path}")
+                        return avdmanager_path
+            except Exception:
+                continue
+        
+        print("未找到avdmanager工具，请确保Android SDK已安装")
+        return None
+    
+    def check_emulator_exists(self):
+        """检查模拟器是否存在"""
+        print(f"检查模拟器 {self.emulator_name} 是否存在...")
+        
+        # 查找avdmanager工具
+        avdmanager_path = self.find_avdmanager()
+        if not avdmanager_path:
+            return False
+        
+        try:
+            # 执行avdmanager list avd命令
+            result = subprocess.run(
+                [avdmanager_path, "list", "avd"],
+                capture_output=True,
+                text=True
+            )
+            
+            # 检查输出中是否包含模拟器名称
+            if self.emulator_name in result.stdout:
+                print(f"模拟器 {self.emulator_name} 已存在")
+                return True
+            else:
+                print(f"模拟器 {self.emulator_name} 不存在")
+                return False
+        except Exception as e:
+            print(f"检查模拟器失败: {e}")
+            return False
+    
+    def create_emulator(self):
+        """创建模拟器"""
+        print(f"创建模拟器 {self.emulator_name}...")
+        
+        # 查找avdmanager工具
+        avdmanager_path = self.find_avdmanager()
+        if not avdmanager_path:
+            return False
+        
+        try:
+            # 获取模拟器创建配置
+            creation_config = self.config['emulator'].get('creation', {})
+            device = creation_config.get('device', 'pixel')
+            system_image = creation_config.get('system_image', 'system-images;android-30;google_apis;x86_64')
+            sdcard_size = creation_config.get('sdcard_size', '1024M')
+            
+            # 检查系统镜像是否存在
+            print(f"检查系统镜像 {system_image} 是否存在...")
+            sdkmanager_path = os.path.join(os.path.dirname(avdmanager_path), 'sdkmanager')
+            if platform.system().lower() == "windows":
+                sdkmanager_path += ".bat"
+            
+            # 检查系统镜像
+            result = subprocess.run(
+                [sdkmanager_path, "--list"],
+                capture_output=True,
+                text=True
+            )
+            
+            if system_image not in result.stdout:
+                print(f"系统镜像 {system_image} 不存在，开始安装...")
+                # 安装系统镜像
+                install_result = subprocess.run(
+                    [sdkmanager_path, system_image],
+                    capture_output=True,
+                    text=True
+                )
+                if install_result.returncode != 0:
+                    print(f"安装系统镜像失败: {install_result.stderr}")
+                    return False
+                print("系统镜像安装成功")
+            
+            # 创建模拟器
+            print(f"使用设备 {device} 和系统镜像 {system_image} 创建模拟器...")
+            create_result = subprocess.run(
+                [avdmanager_path, "create", "avd", "--name", self.emulator_name, "--device", device, "--package", system_image, "--sdcard", sdcard_size, "--force"],
+                capture_output=True,
+                text=True
+            )
+            
+            if create_result.returncode == 0:
+                print(f"模拟器 {self.emulator_name} 创建成功")
+                return True
+            else:
+                print(f"创建模拟器失败: {create_result.stderr}")
+                return False
+        except Exception as e:
+            print(f"创建模拟器失败: {e}")
+            return False
+    
     def start_emulator(self):
         """启动模拟器"""
         print("启动模拟器...")
@@ -730,6 +848,109 @@ class CheckinSkill:
             print(f"启动模拟器失败: {e}")
             return False
     
+    def check_app_installed(self):
+        """检查应用是否已安装"""
+        print(f"检查应用 {self.package_name} 是否已安装...")
+        
+        try:
+            # 执行pm list packages命令
+            result = self.execute_adb_command(["shell", "pm", "list", "packages", self.package_name])
+            
+            # 检查输出中是否包含包名
+            if result and self.package_name in result.stdout:
+                print(f"应用 {self.package_name} 已安装")
+                return True
+            else:
+                print(f"应用 {self.package_name} 未安装")
+                return False
+        except Exception as e:
+            print(f"检查应用安装状态失败: {e}")
+            return False
+    
+    def download_and_install_app(self):
+        """下载并安装应用"""
+        print(f"下载并安装应用 {self.package_name}...")
+        
+        try:
+            # 首先检查是否有本地APK文件
+            app_config = self.config.get('app', {})
+            temp_path = app_config.get('temp_path', '../temp/fxiaoke.apk')
+            apk_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), temp_path)
+            
+            # 确保临时目录存在
+            temp_dir = os.path.dirname(apk_path)
+            os.makedirs(temp_dir, exist_ok=True)
+            
+            # 检查本地是否已有APK文件
+            if os.path.exists(apk_path) and os.path.getsize(apk_path) > 100000:
+                print(f"使用本地APK文件: {apk_path}")
+            else:
+                # 下载APK文件
+                download_url = app_config.get('download_url', 'https://www.fxiaoke.com/download')
+                print(f"从 {download_url} 下载APK...")
+                
+                # 尝试下载，最多重试3次
+                max_retries = 3
+                for retry in range(max_retries):
+                    try:
+                        response = requests.get(download_url, stream=True, timeout=30)
+                        response.raise_for_status()
+                        
+                        # 保存下载的内容
+                        with open(apk_path, 'wb') as f:
+                            for chunk in response.iter_content(chunk_size=8192):
+                                f.write(chunk)
+                        
+                        # 检查文件大小
+                        file_size = os.path.getsize(apk_path)
+                        print(f"下载文件大小: {file_size} 字节")
+                        
+                        if file_size > 100000:
+                            print(f"APK下载成功，保存到: {apk_path}")
+                            break
+                        else:
+                            print(f"下载的文件太小，重试 {retry+1}/{max_retries}...")
+                            time.sleep(2)
+                    except Exception as e:
+                        print(f"下载失败，重试 {retry+1}/{max_retries}: {e}")
+                        time.sleep(2)
+                else:
+                    print("多次下载失败，尝试使用ADB安装命令")
+                    # 提示用户手动下载并安装
+                    print("\n===========================================")
+                    print("请手动下载纷享销客应用APK并安装到模拟器中：")
+                    print("1. 访问 https://www.fxiaoke.com/download 下载APK")
+                    print("2. 使用命令安装：adb install /path/to/fxiaoke.apk")
+                    print("3. 然后重新运行此脚本")
+                    print("===========================================")
+                    return False
+            
+            # 安装APK文件
+            print("安装APK文件...")
+            install_result = self.execute_adb_command(["install", apk_path])
+            
+            if install_result:
+                print("应用安装成功")
+                # 验证安装是否成功
+                if self.check_app_installed():
+                    return True
+                else:
+                    print("应用安装失败，验证未通过")
+                    return False
+            else:
+                print("应用安装失败")
+                return False
+        except Exception as e:
+            print(f"下载并安装应用失败: {e}")
+            # 提示用户手动安装
+            print("\n===========================================")
+            print("请手动安装纷享销客应用到模拟器中：")
+            print("1. 下载APK文件")
+            print("2. 使用命令安装：adb install /path/to/fxiaoke.apk")
+            print("3. 然后重新运行此脚本")
+            print("===========================================")
+            return False
+    
     def is_app_running(self):
         """检查应用是否已经在运行"""
         # 缓存应用运行状态，避免重复执行ADB命令
@@ -758,6 +979,12 @@ class CheckinSkill:
     def start_fxiaoke(self):
         """启动纷享销客应用"""
         print("启动纷享销客应用...")
+        
+        # 检查应用是否已安装
+        if not self.check_app_installed():
+            if not self.download_and_install_app():
+                print("无法安装应用，流程终止")
+                return False
         
         # 检查应用是否已经在运行
         if self.is_app_running():
@@ -1565,7 +1792,14 @@ class CheckinSkill:
             "checkin_records": []
         }
         
-        # 第一步：检查模拟器状态并启动
+        # 第一步：检查模拟器是否存在，不存在则创建
+        if not self.check_emulator_exists():
+            if not self.create_emulator():
+                result["message"] = "无法创建模拟器，流程终止"
+                print(result["message"])
+                return result
+        
+        # 第二步：检查模拟器状态并启动
         if not self.check_emulator_status():
             if not self.start_emulator():
                 result["message"] = "无法启动模拟器，流程终止"
@@ -1573,13 +1807,13 @@ class CheckinSkill:
                 return result
             time.sleep(10)  # 等待模拟器启动
         
-        # 第二步：启动纷享销客
+        # 第三步：启动纷享销客
         if not self.start_fxiaoke():
             result["message"] = "无法启动纷享销客，流程终止"
             print(result["message"])
             return result
         
-        # 第三步：进入考勤页面
+        # 第四步：进入考勤页面
         if not self.navigate_to_attendance():
             result["message"] = "无法进入考勤页面，流程终止"
             print(result["message"])
@@ -1596,7 +1830,7 @@ class CheckinSkill:
         checkin_records = self.detect_checkin_records()
         result["checkin_records"] = checkin_records
         
-        # 第四步：检查打卡状态
+        # 第五步：检查打卡状态
         screenshot_path = self.take_screenshot("before_checkin.png")
         if screenshot_path:
             result["screenshots"]["before"] = screenshot_path
@@ -1667,7 +1901,7 @@ class CheckinSkill:
             print(result["message"])
             return result
         
-        # 第五步：用户确认
+        # 第六步：用户确认
         if user_confirm_callback:
             user_confirm = user_confirm_callback(status_info)
         else:
@@ -1680,7 +1914,7 @@ class CheckinSkill:
             print(result["message"])
             return result
         
-        # 第六步：执行打卡
+        # 第七步：执行打卡
         if time_range == "noon_checkin":
             # 中午需要签退1次+签到1次
             print("执行中午打卡流程: 签退1次 + 签到1次")

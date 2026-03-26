@@ -23,13 +23,24 @@
 
 ## 模拟器配置
 
-| 配置项 | 值 |
-|-------|-----|
-| 名称 | daka |
-| 分辨率 | 1440 × 2560: 560dpi |
-| API版本 | Android API 36 (Google APIs) |
-| CPU/ABI | arm64 |
-| 磁盘大小 | 6.9 GB |
+| 配置项     | 值                            |
+| ------- | ---------------------------- |
+| 名称      | daka                         |
+| 分辨率     | 1440 × 2560: 560dpi          |
+| API版本   | Android API 36 (Google APIs) |
+| CPU/ABI | arm64                        |
+| 磁盘大小    | 6.9 GB                       |
+
+## 定位设置
+
+安装完模拟器后，需要设置模拟器的定位。可以使用项目中的GPX文件来设置经纬度：
+
+1. 启动模拟器
+2. 在Android Studio的Device Manager中，选择对应的模拟器
+3. 点击"Extended controls"按钮
+4. 选择"Location"选项卡
+5. 点击"Load GPX"按钮，选择项目中的 `/Users/tianyong/skills/checkin-skill/temp/location.gpx` 文件
+6. 点击"Play"按钮，模拟器的定位将被设置为GPX文件中指定的位置
 
 ## 安装步骤
 
@@ -43,31 +54,38 @@
 配置文件位于 `config/config.json`，包含以下配置项：
 
 ### 基本配置
+
 - `package_name`: 应用包名，默认为 "com.facishare.fs"
 - `activity_name`: 应用主Activity，默认为 "com.fxiaoke.host.IndexActivity"
 - `emulator_name`: 模拟器名称，默认为 "daka"
 - `screenshot_dir`: 截图保存目录，默认为 "../screenshots"
 
 ### ADB配置
+
 - `common_paths`: ADB工具的可能路径列表
 
 ### 模拟器配置
+
 - `paths`: 不同操作系统下的模拟器路径
 
 ### 坐标配置
+
 - `app_button`: 应用按钮的可能坐标
 - `preset_attendance`: 考勤选项的可能坐标
 - `default_checkin`: 默认打卡坐标
 
 ### 时间范围
+
 - `morning_checkin`: 早上签到时间范围
 - `noon_checkin`: 中午打卡时间范围
 - `evening_checkout`: 晚上签退时间范围
 
 ### UI文本
+
 - 各种UI元素的文本，用于定位元素
 
 ### 等待时间
+
 - 各种操作的等待时间配置
 
 ## 使用方法
@@ -119,19 +137,23 @@ result = run_checkin(user_confirm_callback)
 ## 故障排除
 
 ### 模拟器启动失败
+
 - 检查模拟器名称是否正确
 - 检查Android SDK是否正确安装
 - 检查模拟器是否能够正常启动
 
 ### 应用启动失败
+
 - 检查应用是否已安装
 - 检查包名和Activity名称是否正确
 
 ### 导航失败
+
 - 检查UI文本配置是否正确
 - 检查坐标配置是否适合当前设备分辨率
 
 ### 打卡失败
+
 - 检查定位服务是否开启
 - 检查是否在允许的时间范围内
 - 检查网络连接是否正常
@@ -155,3 +177,4 @@ result = run_checkin(user_confirm_callback)
 - 避免在不安全的网络环境中使用
 - 不要在日志中记录敏感信息
 - 定期清理可能包含敏感信息的截图文件
+

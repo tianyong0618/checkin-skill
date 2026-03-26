@@ -30,7 +30,16 @@
         "/usr/local/android-sdk/emulator/emulator",
         "/opt/android-sdk/emulator/emulator"
       ]
+    },
+    "creation": {
+      "device": "pixel",
+      "system_image": "system-images;android-30;google_apis;x86_64",
+      "sdcard_size": "1024M"
     }
+  },
+  "app": {
+    "download_url": "https://download.fxiaoke.com/fxiaoke/fs/latest/fxiaoke_fs_release.apk",
+    "temp_path": "../temp/fxiaoke.apk"
   },
   "coordinates": {
     "app_button": [
