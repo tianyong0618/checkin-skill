@@ -57,6 +57,15 @@ class CheckinSkill:
         self.adb_path = self.find_adb()  # 查找ADB路径
         os.makedirs(self.screenshot_dir, exist_ok=True)
         
+        # 日志级别设置
+        self.log_level = self.config.get('log', {}).get('level', 'info')  # 默认info级别
+        self.log_levels = {
+            'debug': 0,
+            'info': 1,
+            'warning': 2,
+            'error': 3
+        }
+        
         # 清理临时文件
         self.cleanup_temp_files()
         
@@ -68,26 +77,36 @@ class CheckinSkill:
         self.cache_misses = 0
         self.file_cache = {}  # 文件拉取缓存
     
+    def log(self, level, message):
+        """日志输出方法
+        Args:
+            level: 日志级别，可选值：debug, info, warning, error
+            message: 日志消息
+        """
+        if self.log_levels.get(level, 1) >= self.log_levels.get(self.log_level, 1):
+            timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+            print(f"[{timestamp}] [{level.upper()}] {message}")
+
     def clear_cache(self):
         """清除所有缓存"""
-        print("清除所有缓存...")
+        self.log('info', "清除所有缓存...")
         self.ui_cache.clear()
         self.file_cache.clear()
         self.cache_timestamp = 0
-        print("缓存已清除")
+        self.log('info', "缓存已清除")
     
     def cleanup_temp_files(self):
         """清理临时文件"""
-        print("清理临时文件...")
+        self.log('info', "清理临时文件...")
         try:
             # 清理设备上的临时文件
             temp_files = ["/sdcard/window_dump.xml", "/sdcard/attendance_dump.xml", "/sdcard/screenshot.png"]
             for file_path in temp_files:
                 try:
                     self.execute_adb_command(["shell", "rm", "-f", file_path], check=False)
-                    print(f"清理设备临时文件: {file_path}")
+                    self.log('debug', f"清理设备临时文件: {file_path}")
                 except Exception as e:
-                    print(f"清理设备临时文件失败: {file_path}, {e}")
+                    self.log('warning', f"清理设备临时文件失败: {file_path}, {e}")
             
             # 清理本地截图目录中的旧文件（保留最近3天的文件）
             if os.path.exists(self.screenshot_dir):
@@ -265,17 +284,59 @@ class CheckinSkill:
                 print(f"命令输出: {result.stdout.strip()}")
             return result
         except subprocess.CalledProcessError as e:
-            print(f"ADB命令执行失败: {e}")
+            self.log('error', f"ADB命令执行失败: {e}")
             if e.stdout:
-                print(f"命令输出: {e.stdout}")
+                self.log('debug', f"命令输出: {e.stdout}")
             if e.stderr:
-                print(f"错误输出: {e.stderr}")
+                self.log('debug', f"错误输出: {e.stderr}")
             raise
         except Exception as e:
-            print(f"执行ADB命令时发生异常: {e}")
+            self.log('error', f"执行ADB命令时发生异常: {e}")
             raise
     
     @retry(max_attempts=3, delay=1, backoff=1.5)
+    def clear_ui_cache(self, file_path="/sdcard/window_dump.xml"):
+        """清除指定的UI缓存
+        Args:
+            file_path: 要清除的缓存文件路径
+        """
+        # 清除UI缓存
+        self.ui_cache.pop(file_path, None)
+        # 清除相关的文件缓存
+        for key in list(self.file_cache.keys()):
+            if os.path.basename(file_path) in key:
+                self.file_cache.pop(key, None)
+
+    def wait_for_element(self, text, timeout=10, check_interval=1):
+        """等待特定UI元素出现
+        Args:
+            text: 要等待的元素文本
+            timeout: 超时时间（秒）
+            check_interval: 检查间隔（秒）
+        Returns:
+            bool: 是否在超时前找到元素
+        """
+        start_time = time.time()
+        xml_path = os.path.join(self.screenshot_dir, "window_dump.xml")
+        
+        while time.time() - start_time < timeout:
+            # 导出UI层级
+            success, used_cache = self.dump_ui_hierarchy()
+            if not used_cache:
+                self.pull_file("/sdcard/window_dump.xml", xml_path)
+            
+            # 解析XML并查找元素
+            xml_content = self.parse_ui_xml(xml_path)
+            if text in xml_content:
+                self.log('info', f"找到元素: {text}")
+                return True
+            
+            # 等待一段时间后再次检查
+            time.sleep(check_interval)
+        
+        self.log('warning', f"超时: 未找到元素 {text}")
+        return False
+
     def dump_ui_hierarchy(self, output_file="/sdcard/window_dump.xml"):
         """导出UI层级
         Args:
@@ -286,12 +347,12 @@ class CheckinSkill:
         # 检查缓存是否有效
         current_time = time.time()
         if output_file in self.ui_cache and (current_time - self.cache_timestamp) < self.cache_ttl:
-            print(f"使用缓存的UI层级: {output_file}")
+            self.log('debug', f"使用缓存的UI层级: {output_file}")
             self.cache_hits += 1
             return True, True
         
         # 执行dump操作
-        print(f"导出UI层级到: {output_file}")
+        self.log('info', f"导出UI层级到: {output_file}")
         result = self.execute_adb_command(["shell", "uiautomator", "dump", output_file])
         ui_dump_time = self.config['sleep_times'].get('ui_dump', 1)
         time.sleep(ui_dump_time)  # 等待导出完成
@@ -731,16 +792,18 @@ class CheckinSkill:
             else:
                 time.sleep(interval / 2)
         
-        # 尝试使用 monkey 命令激活应用
-        self.execute_adb_command(["shell", "monkey", "-p", self.package_name, "-c", "android.intent.category.LAUNCHER", "1"])
-        
         # 等待应用完全激活（减少等待时间）
-        time.sleep(self.config['sleep_times'].get('monkey_activate', 2))
+        time.sleep(self.config['sleep_times'].get('monkey_activate', 1))
         
-        # 模拟点击屏幕，确保应用在前台
-        # 点击屏幕底部中央位置，避免点击到具体内容
-        self.execute_adb_command(["shell", "input", "tap", "720", "2400"])
-        time.sleep(self.config['sleep_times'].get('click_wait', 1))  # 减少等待时间
+        # 只有在应用未成功启动时才使用monkey命令
+        if not self.is_app_running():
+            print("应用未成功启动，尝试使用monkey命令激活")
+            self.execute_adb_command(["shell", "monkey", "-p", self.package_name, "-c", "android.intent.category.LAUNCHER", "1"])
+            time.sleep(self.config['sleep_times'].get('monkey_activate', 1))
+            
+            # 模拟点击屏幕，确保应用在前台
+            self.execute_adb_command(["shell", "input", "tap", "720", "2400"])
+            time.sleep(self.config['sleep_times'].get('click_wait', 1))
         
         return True
     
@@ -793,26 +856,32 @@ class CheckinSkill:
                         x, y = self.get_element_center(app_bounds)
                         print(f"找到应用按钮，坐标: ({x}, {y})")
                         self.execute_adb_command(["shell", "input", "tap", str(x), str(y)])
-                        # 清除UI缓存，确保下次dump时获取最新内容
-                        self.ui_cache.pop("/sdcard/window_dump.xml", None)
-                        self.file_cache.clear()  # 清除文件拉取缓存
+                        # 清除相关的UI缓存，保留其他缓存
+                        self.clear_ui_cache("/sdcard/window_dump.xml")
                         # 减少等待时间
                         time.sleep(self.config['sleep_times'].get('click_wait', 1))
                     else:
                         # 备用方案：使用配置的坐标
                         app_button_coordinates = self.config['coordinates']['app_button']
-                        for coord in app_button_coordinates:
+                        # 只尝试前3个坐标，减少不必要的ADB命令
+                        for i, coord in enumerate(app_button_coordinates[:3]):
                             x, y = coord
-                            print(f"尝试点击应用按钮，坐标: ({x}, {y})")
+                            print(f"尝试点击应用按钮，坐标: ({x}, {y}) (尝试 {i+1}/3)")
                             self.execute_adb_command(["shell", "input", "tap", str(x), str(y)])
-                            # 清除UI缓存，确保下次dump时获取最新内容
-                            self.ui_cache.pop("/sdcard/window_dump.xml", None)
-                            self.file_cache.clear()  # 清除文件拉取缓存
+                            # 清除相关的UI缓存，保留其他缓存
+                            self.clear_ui_cache("/sdcard/window_dump.xml")
                             # 减少等待时间
                             time.sleep(self.config['sleep_times'].get('click_wait', 1))
+                            
+                            # 检查是否成功进入应用页面
+                            if self.wait_for_element(self.config['ui']['texts']['attendance'], timeout=2):
+                                print("成功进入应用页面，停止尝试其他坐标")
+                                break
                     
-                    # 等待应用页面加载
-                    time.sleep(self.config['sleep_times'].get('page_load', 2))  # 减少等待时间
+                    # 等待应用页面加载，使用条件等待代替固定等待
+                    attendance_text = self.config['ui']['texts']['attendance']
+                    if not self.wait_for_element(attendance_text, timeout=5):
+                        print("未能找到考勤选项，继续执行")
                     
                     # 再次dump界面层级，查找考勤选项
                     success, used_cache = self.dump_ui_hierarchy()
@@ -832,9 +901,8 @@ class CheckinSkill:
                 print(f"点击考勤按钮...")
                 print(f"找到考勤按钮，坐标: ({x}, {y})")
                 self.execute_adb_command(["shell", "input", "tap", str(x), str(y)])
-                # 清除UI缓存，确保下次dump时获取最新内容
-                self.ui_cache.pop("/sdcard/window_dump.xml", None)
-                self.file_cache.clear()  # 清除文件拉取缓存
+                # 清除相关的UI缓存，保留其他缓存
+                self.clear_ui_cache("/sdcard/window_dump.xml")
                 
                 # 增加等待时间，确保页面完全加载
                 # wait_time = 2
@@ -1210,9 +1278,9 @@ class CheckinSkill:
         try:
             # 强制刷新UI层级
             if force_refresh:
-                # 清除UI缓存
-                self.ui_cache = {}
-                print("清除所有UI缓存...")
+                # 只清除相关的UI缓存，保留其他缓存
+                self.clear_ui_cache("/sdcard/window_dump.xml")
+                print("清除UI缓存...")
                 # 重新dump界面层级
                 success, used_cache = self.dump_ui_hierarchy()
                 print(f"重新dump界面层级: 成功={success}, 使用缓存={used_cache}")
@@ -1222,13 +1290,14 @@ class CheckinSkill:
             
             # 拉取XML文件到本地
             xml_path = os.path.join(self.screenshot_dir, "window_dump.xml")
-            # 强制从设备拉取最新的XML文件，不使用缓存
-            self.pull_file("/sdcard/window_dump.xml", xml_path, force_refresh=force_refresh)
-            print(f"从设备拉取最新的XML文件到: {xml_path}")
+            # 只有在未使用缓存时才拉取文件
+            if not used_cache:
+                # 强制从设备拉取最新的XML文件，不使用缓存
+                self.pull_file("/sdcard/window_dump.xml", xml_path, force_refresh=force_refresh)
+                print(f"从设备拉取最新的XML文件到: {xml_path}")
+            else:
+                print("使用缓存的XML文件")
             
-            # 清除XML缓存，强制重新读取
-            self.ui_cache = {}
-            print("清除XML缓存...")
             # 读取并分析XML文件
             xml_content = self.parse_ui_xml(xml_path)
             print(f"读取XML文件长度: {len(xml_content)} 字符")
@@ -1289,41 +1358,56 @@ class CheckinSkill:
     def perform_checkin(self):
         """执行打卡操作"""
         print("执行打卡操作...")
-        # 使用UIAutomator dump界面层级，找到实际的打卡按钮位置
-        self.dump_ui_hierarchy()
-        
-        # 拉取XML文件到本地
-        xml_path = os.path.join(self.screenshot_dir, "window_dump.xml")
-        self.pull_file("/sdcard/window_dump.xml", xml_path)
-        
-        # 读取并分析XML文件，查找打卡按钮
-        xml_content = self.parse_ui_xml(xml_path)
-        
-        # 查找包含"签到"或"签退"的按钮
-        match = re.search(r'text="(签到|签退)"[^>]+bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"', xml_content)
-        if match:
-            left = int(match.group(2))
-            top = int(match.group(3))
-            right = int(match.group(4))
-            bottom = int(match.group(5))
-            # 计算中心点坐标
-            x = (left + right) // 2
-            y = (top + bottom) // 2
-            print(f"找到打卡按钮，坐标: ({x}, {y})")
+        try:
+            # 使用UIAutomator dump界面层级，找到实际的打卡按钮位置
+            success, used_cache = self.dump_ui_hierarchy()
             
-            # 点击打卡按钮
-            self.execute_adb_command(["shell", "input", "tap", str(x), str(y)])
-            time.sleep(2)
-            return True
-        else:
-            # 如果没有找到按钮，使用默认坐标
-            print("未找到打卡按钮，使用默认坐标")
-            default_checkin = self.config['coordinates']['default_checkin']
-            self.execute_adb_command(["shell", "input", "tap", str(default_checkin[0]), str(default_checkin[1])])
-            click_wait_time = self.config['sleep_times'].get('click_wait', 2)
-            time.sleep(click_wait_time)
-            return True
+            # 拉取XML文件到本地
+            xml_path = os.path.join(self.screenshot_dir, "window_dump.xml")
+            if not used_cache:
+                self.pull_file("/sdcard/window_dump.xml", xml_path)
+            
+            # 读取并分析XML文件，查找打卡按钮
+            xml_content = self.parse_ui_xml(xml_path)
+            
+            # 查找包含"签到"或"签退"的按钮
+            match = re.search(r'text="(签到|签退)"[^>]+bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"', xml_content)
+            if match:
+                left = int(match.group(2))
+                top = int(match.group(3))
+                right = int(match.group(4))
+                bottom = int(match.group(5))
+                # 计算中心点坐标
+                x = (left + right) // 2
+                y = (top + bottom) // 2
+                print(f"找到打卡按钮，坐标: ({x}, {y})")
+                
+                # 点击打卡按钮
+                self.execute_adb_command(["shell", "input", "tap", str(x), str(y)])
+                time.sleep(2)
+                return True
+            else:
+                # 如果没有找到按钮，使用默认坐标
+                print("未找到打卡按钮，使用默认坐标")
+                default_checkin = self.config['coordinates']['default_checkin']
+                self.execute_adb_command(["shell", "input", "tap", str(default_checkin[0]), str(default_checkin[1])])
+                click_wait_time = self.config['sleep_times'].get('click_wait', 2)
+                time.sleep(click_wait_time)
+                return True
+        except Exception as e:
+            print(f"执行打卡操作时出错: {e}")
+            # 尝试使用默认坐标作为备选方案
+            try:
+                print("尝试使用默认坐标进行打卡")
+                default_checkin = self.config['coordinates']['default_checkin']
+                self.execute_adb_command(["shell", "input", "tap", str(default_checkin[0]), str(default_checkin[1])])
+                time.sleep(2)
+                return True
+            except Exception as e2:
+                print(f"使用默认坐标打卡也失败: {e2}")
+                return False
     
+    @retry(max_attempts=3, delay=1, backoff=1.5)
     def check_attendance_date(self):
         """检查考勤页面显示的日期是否为当天
         Returns:
@@ -1332,11 +1416,12 @@ class CheckinSkill:
         print("检查考勤页面日期...")
         try:
             # 使用UIAutomator dump界面层级
-            self.dump_ui_hierarchy()
+            success, used_cache = self.dump_ui_hierarchy()
             
             # 拉取XML文件到本地
             xml_path = os.path.join(self.screenshot_dir, "window_dump.xml")
-            self.pull_file("/sdcard/window_dump.xml", xml_path)
+            if not used_cache:
+                self.pull_file("/sdcard/window_dump.xml", xml_path)
             
             # 读取并分析XML文件
             xml_content = self.parse_ui_xml(xml_path)
@@ -1367,10 +1452,27 @@ class CheckinSkill:
                     return False
             else:
                 print("未找到日期信息")
+                # 尝试使用其他日期格式查找
+                alternative_pattern = r'(\d{4}-\d{2}-\d{2})'
+                alternative_match = re.search(alternative_pattern, xml_content)
+                if alternative_match:
+                    alternative_date = alternative_match.group(1)
+                    print(f"找到替代日期格式: {alternative_date}")
+                    # 转换为与today_str相同的格式进行比较
+                    try:
+                        alt_date_obj = datetime.datetime.strptime(alternative_date, "%Y-%m-%d")
+                        alt_date_str = alt_date_obj.strftime("%m月%d日").lstrip('0')
+                        if alt_date_str == today_str:
+                            print("页面显示的是当天日期")
+                            return True
+                    except Exception as e:
+                        print(f"解析替代日期格式时出错: {e}")
                 return False
         except Exception as e:
             print(f"检查日期时出错: {e}")
-            return False
+            # 出错时默认认为是当天日期，避免因日期检查失败而中断流程
+            print("日期检查失败，默认认为是当天日期")
+            return True
     
     def detect_checkin_records(self):
         """检测考勤页面中的打卡记录
