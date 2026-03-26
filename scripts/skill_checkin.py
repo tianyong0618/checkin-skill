@@ -1729,8 +1729,24 @@ def run_checkin(user_confirm_callback=None):
     Returns:
         dict: 打卡结果
     """
-    skill = CheckinSkill()
-    return skill.run(user_confirm_callback)
+    # 直接执行auto_checkin.py的逻辑
+    import subprocess
+    import os
+    
+    # 执行auto_checkin.py脚本
+    script_path = os.path.join(os.path.dirname(__file__), "auto_checkin.py")
+    # 直接执行并显示输出
+    result = subprocess.run(["python3", script_path])
+    
+    # 构建结果字典
+    return_dict = {
+        "success": result.returncode == 0,
+        "message": "打卡流程执行完成",
+        "screenshots": {},
+        "checkin_records": []
+    }
+    
+    return return_dict
 
 if __name__ == "__main__":
     run_checkin()
