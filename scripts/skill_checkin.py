@@ -934,6 +934,84 @@ class CheckinSkill:
             print(f"启动模拟器失败: {e}")
             return False
     
+    def stop_emulator(self):
+        """关闭模拟器"""
+        print("关闭模拟器...")
+        try:
+            # 清除设备状态缓存
+            self.cache['status'].pop('device_status', None)
+            
+            # 查找emulator命令路径
+            emulator_path = None
+            system = platform.system().lower()
+            
+            # 从配置中获取对应系统的模拟器路径
+            possible_paths = self.config['emulator']['paths'].get(system, [])
+            
+            for path in possible_paths:
+                # 替换{USERNAME}占位符
+                if "{USERNAME}" in path:
+                    path = path.format(USERNAME=os.getenv("USERNAME", ""))
+                
+                # 展开~符号
+                expanded_path = os.path.expanduser(path)
+                if os.path.exists(expanded_path):
+                    emulator_path = expanded_path
+                    break
+            
+            if not emulator_path:
+                print("未找到emulator命令，无法关闭模拟器")
+                return False
+            
+            # 关闭模拟器
+            print(f"使用路径: {emulator_path} 关闭模拟器: {self.emulator_name}")
+            # 使用adb命令关闭模拟器
+            if self.check_adb_available():
+                # 首先获取设备列表
+                result = self.execute_adb_command(["devices"])
+                if result:
+                    devices = result.stdout.strip().split('\n')[1:]
+                    running_devices = [device.split('\t')[0] for device in devices if 'device' in device]
+                    
+                    for device in running_devices:
+                        print(f"关闭设备: {device}")
+                        # 使用adb命令关闭模拟器
+                        try:
+                            # 对于模拟器，使用 adb emu kill 命令
+                            if "emulator" in device:
+                                print("使用 adb emu kill 命令关闭模拟器")
+                                self.execute_adb_command(["-s", device, "emu", "kill"], check=False)
+                            else:
+                                # 对于真实设备，使用 reboot -p 命令
+                                print("使用 reboot -p 命令关闭设备")
+                                self.execute_adb_command(["-s", device, "shell", "reboot", "-p"], check=False)
+                            print(f"设备 {device} 关闭命令已发送")
+                        except Exception as e:
+                            print(f"关闭设备 {device} 失败: {e}")
+            
+            # 等待模拟器关闭（增加等待时间）
+            print("等待模拟器关闭...")
+            for i in range(10):
+                time.sleep(1)
+                # 清除设备状态缓存
+                self.cache['status'].pop('device_status', None)
+                # 检查模拟器状态
+                if not self.check_emulator_status():
+                    print("模拟器已成功关闭")
+                    return True
+                print(f"等待模拟器关闭... {i+1}/10")
+            
+            # 再次检查模拟器状态
+            if not self.check_emulator_status():
+                print("模拟器已成功关闭")
+                return True
+            else:
+                print("模拟器关闭失败，可能需要手动关闭")
+                return False
+        except Exception as e:
+            print(f"关闭模拟器失败: {e}")
+            return False
+    
     def check_app_installed(self):
         """检查应用是否已安装"""
         print(f"检查应用 {self.package_name} 是否已安装...")
@@ -2010,69 +2088,75 @@ class CheckinSkill:
             "checkin_records": []
         }
         
-        # 第一步：设置模拟器
-        success, message = self.setup_emulator()
-        if not success:
-            result["message"] = message
+        try:
+            # 第一步：设置模拟器
+            success, message = self.setup_emulator()
+            if not success:
+                result["message"] = message
+                print(result["message"])
+                return result
+            
+            # 第二步：准备打卡
+            success, message, checkin_records, screenshot_path = self.prepare_checkin()
+            if not success:
+                result["message"] = message
+                print(result["message"])
+                return result
+            
+            result["checkin_records"] = checkin_records
+            if screenshot_path:
+                result["screenshots"]["before"] = screenshot_path
+            
+            # 第三步：检查打卡状态
+            can_checkin, message, time_range, status_info = self.check_checkin_status(checkin_records, screenshot_path)
+            if not can_checkin:
+                result["message"] = self.build_message(message, checkin_records)
+                print(result["message"])
+                if message == "当前时段内已经打过卡，跳过打卡操作" or message == "当前时间不在打卡范围内，不需要打卡":
+                    result["success"] = True
+                return result
+            
+            # 第四步：用户确认
+            if user_confirm_callback:
+                user_confirm = user_confirm_callback(status_info)
+            else:
+                # 命令行模式
+                user_confirm = input("是否执行打卡？(y/n): ")
+                user_confirm = user_confirm.lower() == 'y'
+            
+            if not user_confirm:
+                result["message"] = self.build_message("用户取消打卡", checkin_records)
+                print(result["message"])
+                return result
+            
+            # 第五步：执行打卡
+            if not self.perform_checkin_operation(time_range):
+                result["message"] = self.build_message("打卡失败", checkin_records)
+                print(result["message"])
+                return result
+            
+            # 第六步：汇报结果
+            time.sleep(2)
+            result_screenshot = self.take_screenshot("after_checkin.png")
+            result["screenshots"]["after"] = result_screenshot
+            result["success"] = True
+            # 重新检测打卡记录，确保显示最新的
+            updated_checkin_records = self.detect_checkin_records()
+            if updated_checkin_records:
+                checkin_records = updated_checkin_records
+            result["message"] = self.build_message(f"打卡完成！结果截图已保存至: {result_screenshot}", checkin_records)
+            # 输出缓存统计信息
+            total_cache = self.cache_stats['hits'] + self.cache_stats['misses']
+            cache_hit_rate = (self.cache_stats['hits'] / total_cache * 100) if total_cache > 0 else 0
+            print(f"缓存统计: 命中={self.cache_stats['hits']}, 未命中={self.cache_stats['misses']}, 命中率={cache_hit_rate:.1f}%")
+            
             print(result["message"])
-            return result
+        finally:
+            # 关闭模拟器
+            self.stop_emulator()
+            
+            print("=== 打卡流程结束 ===")
         
-        # 第二步：准备打卡
-        success, message, checkin_records, screenshot_path = self.prepare_checkin()
-        if not success:
-            result["message"] = message
-            print(result["message"])
-            return result
-        
-        result["checkin_records"] = checkin_records
-        if screenshot_path:
-            result["screenshots"]["before"] = screenshot_path
-        
-        # 第三步：检查打卡状态
-        can_checkin, message, time_range, status_info = self.check_checkin_status(checkin_records, screenshot_path)
-        if not can_checkin:
-            result["message"] = self.build_message(message, checkin_records)
-            print(result["message"])
-            if message == "当前时段内已经打过卡，跳过打卡操作":
-                result["success"] = True
-            return result
-        
-        # 第四步：用户确认
-        if user_confirm_callback:
-            user_confirm = user_confirm_callback(status_info)
-        else:
-            # 命令行模式
-            user_confirm = input("是否执行打卡？(y/n): ")
-            user_confirm = user_confirm.lower() == 'y'
-        
-        if not user_confirm:
-            result["message"] = self.build_message("用户取消打卡", checkin_records)
-            print(result["message"])
-            return result
-        
-        # 第五步：执行打卡
-        if not self.perform_checkin_operation(time_range):
-            result["message"] = self.build_message("打卡失败", checkin_records)
-            print(result["message"])
-            return result
-        
-        # 第六步：汇报结果
-        time.sleep(2)
-        result_screenshot = self.take_screenshot("after_checkin.png")
-        result["screenshots"]["after"] = result_screenshot
-        result["success"] = True
-        # 重新检测打卡记录，确保显示最新的
-        updated_checkin_records = self.detect_checkin_records()
-        if updated_checkin_records:
-            checkin_records = updated_checkin_records
-        result["message"] = self.build_message(f"打卡完成！结果截图已保存至: {result_screenshot}", checkin_records)
-        # 输出缓存统计信息
-        total_cache = self.cache_stats['hits'] + self.cache_stats['misses']
-        cache_hit_rate = (self.cache_stats['hits'] / total_cache * 100) if total_cache > 0 else 0
-        print(f"缓存统计: 命中={self.cache_stats['hits']}, 未命中={self.cache_stats['misses']}, 命中率={cache_hit_rate:.1f}%")
-        
-        print(result["message"])
-        print("=== 打卡流程结束 ===")
         return result
 
 # 供agent调用的接口
