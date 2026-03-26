@@ -239,25 +239,29 @@ class CheckinSkill:
         }
     
     @retry(max_attempts=3, delay=1, backoff=1.5)
-    def execute_adb_command(self, command, capture_output=True, check=True):
+    def execute_adb_command(self, command, capture_output=True, check=True, verbose=False):
         """执行ADB命令
         Args:
             command: 命令列表，如 ["devices"]
             capture_output: 是否捕获输出
             check: 是否检查返回码
+            verbose: 是否输出详细日志
         Returns:
             subprocess.CompletedProcess: 命令执行结果
         """
         full_command = [self.adb_path] + command
         try:
-            print(f"执行ADB命令: {' '.join(full_command)}")
+            # 只在verbose模式下输出详细日志
+            if verbose:
+                print(f"执行ADB命令: {' '.join(full_command)}")
             result = subprocess.run(
                 full_command,
                 capture_output=capture_output,
                 text=True,
                 check=check
             )
-            if capture_output and result.stdout:
+            # 只在verbose模式下输出命令输出
+            if verbose and capture_output and result.stdout:
                 print(f"命令输出: {result.stdout.strip()}")
             return result
         except subprocess.CalledProcessError as e:
@@ -743,8 +747,6 @@ class CheckinSkill:
     def navigate_to_attendance(self):
         """进入考勤页面"""
         print("进入考勤页面...")
-        # 入口处强制清除所有缓存
-        self.clear_cache()
         xml_path = os.path.join(self.screenshot_dir, "window_dump.xml")
         
         # 第一步：判断当前页面状态
@@ -757,8 +759,8 @@ class CheckinSkill:
             if not self.go_to_home():
                 print("回到首页失败，导航终止")
                 return False
-            # 回到首页后，重新判断页面状态
-            page_status = self.check_page_status()
+            # 回到首页后，重新判断页面状态（强制刷新）
+            page_status = self.check_page_status(force_refresh=True)
             if page_status != 'home':
                 print("未能回到首页，导航终止")
                 return False
@@ -766,12 +768,7 @@ class CheckinSkill:
             # 是首页，导航到考勤页面
             print("当前页面是首页，导航到考勤页面...")
             
-            # 截图应用页面，确认当前状态
-            app_screenshot = os.path.join(self.screenshot_dir, "app_page.png")
-            self.execute_adb_command(["shell", "screencap", "/sdcard/app_screenshot.png"])
-            self.execute_adb_command(["pull", "/sdcard/app_screenshot.png", app_screenshot])
-            
-            # 使用UIAutomator查找考勤选项（只dump一次）
+            # 使用UIAutomator查找考勤选项
             success, used_cache = self.dump_ui_hierarchy()
             if not used_cache:
                 self.pull_file("/sdcard/window_dump.xml", xml_path)
@@ -790,9 +787,8 @@ class CheckinSkill:
                     x, y = self.get_element_center(app_bounds)
                     print(f"找到应用按钮，坐标: ({x}, {y})")
                     self.execute_adb_command(["shell", "input", "tap", str(x), str(y)])
-                    time.sleep(3)
-                    # 点击后清除缓存
-                    self.clear_cache()
+                    # 减少等待时间
+                    time.sleep(self.config['sleep_times'].get('click_wait', 1))
                 else:
                     # 备用方案：使用配置的坐标
                     app_button_coordinates = self.config['coordinates']['app_button']
@@ -800,15 +796,12 @@ class CheckinSkill:
                         x, y = coord
                         print(f"尝试点击应用按钮，坐标: ({x}, {y})")
                         self.execute_adb_command(["shell", "input", "tap", str(x), str(y)])
-                        # 动态等待，根据操作类型调整等待时间
+                        # 减少等待时间
                         time.sleep(self.config['sleep_times'].get('click_wait', 1))
-                        # 点击后清除缓存
-                        self.clear_cache()
-                        
                         # 不立即检查，减少dump次数
             
             # 等待应用页面加载
-            time.sleep(self.config['sleep_times'].get('page_load', 3))
+            time.sleep(self.config['sleep_times'].get('page_load', 2))  # 减少等待时间
             
             # 再次dump界面层级，查找考勤选项
             success, used_cache = self.dump_ui_hierarchy()
@@ -826,11 +819,11 @@ class CheckinSkill:
                 
                 # 点击考勤选项
                 self.execute_adb_command(["shell", "input", "tap", str(x), str(y)])
-                checkin_wait_time = self.config['sleep_times'].get('checkin_wait', 5)
-                time.sleep(checkin_wait_time)
+                # 减少等待时间
+                time.sleep(self.config['sleep_times'].get('checkin_wait', 3))
                 
-                # 再次检查页面状态，看是否已经进入考勤页面
-                current_status = self.check_page_status()
+                # 再次检查页面状态，看是否已经进入考勤页面（强制刷新）
+                current_status = self.check_page_status(force_refresh=True)
                 if current_status != 'attendance':
                     # 尝试使用更精确的坐标点击
                     offsets = self.config['ui']['offsets']
@@ -838,10 +831,11 @@ class CheckinSkill:
                         offset_x = x + offset[0]
                         offset_y = y + offset[1]
                         self.execute_adb_command(["shell", "input", "tap", str(offset_x), str(offset_y)])
-                        time.sleep(3)
+                        # 减少等待时间
+                        time.sleep(self.config['sleep_times'].get('click_wait', 1))
                         
-                        # 再次检查页面状态
-                        current_status = self.check_page_status()
+                        # 再次检查页面状态（强制刷新）
+                        current_status = self.check_page_status(force_refresh=True)
                         if current_status == 'attendance':
                             break
             else:
@@ -854,7 +848,8 @@ class CheckinSkill:
                 for x in x_coords:
                     for y in y_coords:
                         self.execute_adb_command(["shell", "input", "tap", str(x), str(y)])
-                        time.sleep(2)
+                        # 减少等待时间
+                        time.sleep(self.config['sleep_times'].get('click_wait', 1))
                         
                         # 再次检查页面状态，看是否已经进入考勤页面
                         current_status = self.check_page_status()
@@ -883,14 +878,11 @@ class CheckinSkill:
                 
                 # 点击考勤选项
                 self.execute_adb_command(["shell", "input", "tap", str(x), str(y)])
-                checkin_wait_time = self.config['sleep_times'].get('checkin_wait', 5)
-                time.sleep(checkin_wait_time)
+                # 减少等待时间
+                time.sleep(self.config['sleep_times'].get('checkin_wait', 3))
                 
-                # 清除缓存，确保获取最新的页面状态
-                self.clear_cache()
-                
-                # 检查页面状态
-                current_status = self.check_page_status()
+                # 检查页面状态（强制刷新）
+                current_status = self.check_page_status(force_refresh=True)
                 if current_status != 'attendance':
                     # 尝试使用更精确的坐标点击
                     offsets = self.config['ui']['offsets']
@@ -898,13 +890,11 @@ class CheckinSkill:
                         offset_x = x + offset[0]
                         offset_y = y + offset[1]
                         self.execute_adb_command(["shell", "input", "tap", str(offset_x), str(offset_y)])
-                        time.sleep(2)
+                        # 减少等待时间
+                        time.sleep(self.config['sleep_times'].get('click_wait', 1))
                         
-                        # 清除缓存，确保获取最新的页面状态
-                        self.clear_cache()
-                        
-                        # 再次检查页面状态
-                        current_status = self.check_page_status()
+                        # 再次检查页面状态（强制刷新）
+                        current_status = self.check_page_status(force_refresh=True)
                         if current_status == 'attendance':
                             break
             else:
@@ -916,10 +906,8 @@ class CheckinSkill:
                 for x in x_coords:
                     for y in y_coords:
                         self.execute_adb_command(["shell", "input", "tap", str(x), str(y)])
-                        time.sleep(2)
-                        
-                        # 清除缓存，确保获取最新的页面状态
-                        self.clear_cache()
+                        # 减少等待时间
+                        time.sleep(self.config['sleep_times'].get('click_wait', 1))
                         
                         # 检查页面状态
                         current_status = self.check_page_status()
@@ -933,11 +921,11 @@ class CheckinSkill:
         
         # 截图当前页面
         test_screenshot = self.take_screenshot("test_attendance_page.png")
-        print(f"截图当前页面到: {test_screenshot}")
-        print(f"截图已保存至: {test_screenshot}")
+        if test_screenshot:
+            print(f"截图当前页面到: {test_screenshot}")
         
-        # 再次检查页面状态，确保最终在考勤页面
-        final_status = self.check_page_status()
+        # 再次检查页面状态，确保最终在考勤页面（强制刷新）
+        final_status = self.check_page_status(force_refresh=True)
         if final_status == 'attendance':
             print("导航到考勤页面成功！")
             return True
@@ -1246,27 +1234,39 @@ class CheckinSkill:
             print(f"获取当前Activity失败: {e}")
             return None
     
-    def check_page_status(self):
+    def check_page_status(self, force_refresh=False):
         """判断当前页面状态
+        Args:
+            force_refresh: 是否强制刷新UI层级
         Returns:
             str: 页面状态，可能的值：'attendance', 'home', 'app_list', 'other'
         """
         # 缓存页面状态，避免重复执行ADB命令
-        if hasattr(self, '_page_status') and (time.time() - self._page_status['timestamp']) < 5:
+        if not force_refresh and hasattr(self, '_page_status') and (time.time() - self._page_status['timestamp']) < 5:
             print(f"使用缓存的页面状态: {self._page_status['status']}")
             return self._page_status['status']
         
         # 直接使用UIAutomator判断页面状态，减少对Activity的依赖
         try:
-            # 使用UIAutomator dump界面层级（会使用缓存）
-            success, used_cache = self.dump_ui_hierarchy()
+            # 强制刷新UI层级
+            if force_refresh:
+                # 清除UI缓存
+                if 'window_dump.xml' in self.ui_cache:
+                    del self.ui_cache['window_dump.xml']
+                # 重新dump界面层级
+                success, used_cache = self.dump_ui_hierarchy()
+            else:
+                # 使用UIAutomator dump界面层级（会使用缓存）
+                success, used_cache = self.dump_ui_hierarchy()
             
-            # 拉取XML文件到本地（如果没有使用缓存）
+            # 拉取XML文件到本地
             xml_path = os.path.join(self.screenshot_dir, "window_dump.xml")
-            if not used_cache:
-                self.pull_file("/sdcard/window_dump.xml", xml_path)
+            self.pull_file("/sdcard/window_dump.xml", xml_path)
             
-            # 读取并分析XML文件（会使用缓存）
+            # 清除XML缓存，强制重新读取
+            if xml_path in self.ui_cache:
+                del self.ui_cache[xml_path]
+            # 读取并分析XML文件
             xml_content = self.parse_ui_xml(xml_path)
             
             # 检查是否是纷享销客应用
