@@ -1531,8 +1531,29 @@ class CheckinSkill:
         else:
             print("截图已禁用，跳过截图操作")
         
-        location_status = self.check_location_status(screenshot_path)
+        # 先检查时间范围，避免不必要的定位状态检查
         time_range = self.check_time_range()
+        
+        # 检查是否在打卡范围内
+        if time_range == "out_of_range":
+            result["message"] = "当前时间不在打卡范围内，不需要打卡"
+            print(result["message"])
+            result["success"] = True
+            return result
+        
+        # 检查当前时段内是否已经打过卡
+        if self.check_existing_checkin():
+            result["message"] = "当前时段内已经打过卡，跳过打卡操作"
+            print(result["message"])
+            # 截图当前页面
+            screenshot_path = self.take_screenshot("already_checked_in.png")
+            if screenshot_path:
+                result["screenshots"]["after"] = screenshot_path
+            result["success"] = True
+            return result
+        
+        # 检查定位状态和按钮状态
+        location_status = self.check_location_status(screenshot_path)
         button_status = self.check_button_status()
         
         status_info = {
@@ -1552,28 +1573,10 @@ class CheckinSkill:
             for i, record in enumerate(checkin_records):
                 print(f"  {i+1}. {record}")
         
-        # 检查是否在打卡范围内
-        if time_range == "out_of_range":
-            result["message"] = "当前时间不在打卡范围内，不需要打卡"
-            print(result["message"])
-            result["success"] = True
-            return result
-        
-        # 检查是否可以打卡
+        # 检查是否可以打卡（定位状态）
         if not location_status:
             result["message"] = "未进入地点考勤范围，无法打卡"
             print(result["message"])
-            return result
-        
-        # 检查当前时段内是否已经打过卡
-        if self.check_existing_checkin():
-            result["message"] = "当前时段内已经打过卡，跳过打卡操作"
-            print(result["message"])
-            # 截图当前页面
-            screenshot_path = self.take_screenshot("already_checked_in.png")
-            if screenshot_path:
-                result["screenshots"]["after"] = screenshot_path
-            result["success"] = True
             return result
         
         # 构建包含打卡记录的消息
