@@ -32,12 +32,31 @@ def retry(max_attempts=3, delay=2, backoff=1.5, exceptions=(Exception,)):
                 except exceptions as e:
                     attempts += 1
                     if attempts >= max_attempts:
-                        print(f"{func.__name__} 执行失败，已达到最大重试次数: {e}")
+                        self.log('error', f"{func.__name__} 执行失败，已达到最大重试次数: {e}")
                         raise
                     
-                    print(f"{func.__name__} 执行失败，{attempts}/{max_attempts}，{current_delay}秒后重试: {e}")
+                    self.log('warning', f"{func.__name__} 执行失败，{attempts}/{max_attempts}，{current_delay}秒后重试: {e}")
                     time.sleep(current_delay)
                     current_delay *= backoff
+        return wrapper
+    return decorator
+
+def handle_exception(default_return=None, log_level='error'):
+    """异常处理装饰器
+    Args:
+        default_return: 异常发生时的默认返回值
+        log_level: 日志级别
+    Returns:
+        装饰后的函数
+    """
+    def decorator(func):
+        @functools.wraps(func)
+        def wrapper(self, *args, **kwargs):
+            try:
+                return func(self, *args, **kwargs)
+            except Exception as e:
+                self.log(log_level, f"{func.__name__} 执行失败: {e}")
+                return default_return
         return wrapper
     return decorator
 
@@ -70,13 +89,17 @@ class CheckinSkill:
         # 清理临时文件
         self.cleanup_temp_files()
         
-        # 初始化UI层级缓存
-        self.ui_cache = {}
-        self.cache_timestamp = 0
-        self.cache_ttl = 15  # 延长缓存有效期到15秒
-        self.cache_hits = 0
-        self.cache_misses = 0
-        self.file_cache = {}  # 文件拉取缓存
+        # 初始化缓存系统
+        self.cache = {
+            'ui': {},  # UI层级缓存
+            'file': {},  # 文件拉取缓存
+            'status': {}  # 状态缓存（如页面状态、设备状态等）
+        }
+        self.cache_ttl = 15  # 缓存有效期（秒）
+        self.cache_stats = {
+            'hits': 0,
+            'misses': 0
+        }
     
     def log(self, level, message):
         """日志输出方法
@@ -88,64 +111,72 @@ class CheckinSkill:
             timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
             print(f"[{timestamp}] [{level.upper()}] {message}")
 
-    def clear_cache(self):
-        """清除所有缓存"""
-        self.log('info', "清除所有缓存...")
-        self.ui_cache.clear()
-        self.file_cache.clear()
-        self.cache_timestamp = 0
-        self.log('info', "缓存已清除")
+    def clear_cache(self, cache_type=None):
+        """清除缓存
+        Args:
+            cache_type: 缓存类型，可选值：'ui', 'file', 'status'，默认清除所有缓存
+        """
+        if cache_type:
+            if cache_type in self.cache:
+                self.log('info', f"清除{cache_type}缓存...")
+                self.cache[cache_type].clear()
+                self.log('info', f"{cache_type}缓存已清除")
+            else:
+                self.log('warning', f"未知的缓存类型: {cache_type}")
+        else:
+            self.log('info', "清除所有缓存...")
+            for cache_name in self.cache:
+                self.cache[cache_name].clear()
+            self.log('info', "缓存已清除")
     
+    @handle_exception(default_return=None, log_level='warning')
     def cleanup_temp_files(self):
         """清理临时文件"""
         self.log('info', "清理临时文件...")
-        try:
-            # 清理设备上的临时文件
-            temp_files = ["/sdcard/window_dump.xml", "/sdcard/attendance_dump.xml", "/sdcard/screenshot.png"]
-            for file_path in temp_files:
-                try:
-                    self.execute_adb_command(["shell", "rm", "-f", file_path], check=False)
-                    self.log('debug', f"清理设备临时文件: {file_path}")
-                except Exception as e:
-                    self.log('warning', f"清理设备临时文件失败: {file_path}, {e}")
+        
+        # 清理设备上的临时文件
+        temp_files = ["/sdcard/window_dump.xml", "/sdcard/attendance_dump.xml", "/sdcard/screenshot.png"]
+        for file_path in temp_files:
+            try:
+                self.execute_adb_command(["shell", "rm", "-f", file_path], check=False)
+                self.log('debug', f"清理设备临时文件: {file_path}")
+            except Exception as e:
+                self.log('warning', f"清理设备临时文件失败: {file_path}, {e}")
+        
+        # 清理本地截图目录中的旧文件（保留最近3天的文件）
+        if os.path.exists(self.screenshot_dir):
+            three_days_ago = datetime.datetime.now() - datetime.timedelta(days=3)
             
-            # 清理本地截图目录中的旧文件（保留最近3天的文件）
-            if os.path.exists(self.screenshot_dir):
-                import datetime
-                three_days_ago = datetime.datetime.now() - datetime.timedelta(days=3)
-                
-                # 统计清理前的文件数量和大小
-                before_count = 0
-                before_size = 0
-                for filename in os.listdir(self.screenshot_dir):
-                    file_path = os.path.join(self.screenshot_dir, filename)
-                    if os.path.isfile(file_path):
-                        before_count += 1
-                        before_size += os.path.getsize(file_path)
-                
-                # 清理旧文件
-                cleaned_count = 0
-                cleaned_size = 0
-                for filename in os.listdir(self.screenshot_dir):
-                    file_path = os.path.join(self.screenshot_dir, filename)
-                    if os.path.isfile(file_path):
-                        file_mtime = datetime.datetime.fromtimestamp(os.path.getmtime(file_path))
-                        if file_mtime < three_days_ago:
-                            try:
-                                file_size = os.path.getsize(file_path)
-                                os.unlink(file_path)
-                                print(f"清理旧截图: {filename} ({file_size / 1024:.1f}KB)")
-                                cleaned_count += 1
-                                cleaned_size += file_size
-                            except Exception as e:
-                                print(f"清理旧截图失败: {filename}, {e}")
-                
-                # 统计清理后的文件数量和大小
-                after_count = before_count - cleaned_count
-                after_size = before_size - cleaned_size
-                print(f"截图目录清理完成: 清理前 {before_count} 个文件 ({before_size / 1024:.1f}KB)，清理后 {after_count} 个文件 ({after_size / 1024:.1f}KB)，清理了 {cleaned_count} 个文件 ({cleaned_size / 1024:.1f}KB)")
-        except Exception as e:
-            print(f"清理临时文件失败: {e}")
+            # 统计清理前的文件数量和大小
+            before_count = 0
+            before_size = 0
+            for filename in os.listdir(self.screenshot_dir):
+                file_path = os.path.join(self.screenshot_dir, filename)
+                if os.path.isfile(file_path):
+                    before_count += 1
+                    before_size += os.path.getsize(file_path)
+            
+            # 清理旧文件
+            cleaned_count = 0
+            cleaned_size = 0
+            for filename in os.listdir(self.screenshot_dir):
+                file_path = os.path.join(self.screenshot_dir, filename)
+                if os.path.isfile(file_path):
+                    file_mtime = datetime.datetime.fromtimestamp(os.path.getmtime(file_path))
+                    if file_mtime < three_days_ago:
+                        try:
+                            file_size = os.path.getsize(file_path)
+                            os.unlink(file_path)
+                            self.log('info', f"清理旧截图: {filename} ({file_size / 1024:.1f}KB)")
+                            cleaned_count += 1
+                            cleaned_size += file_size
+                        except Exception as e:
+                            self.log('warning', f"清理旧截图失败: {filename}, {e}")
+            
+            # 统计清理后的文件数量和大小
+            after_count = before_count - cleaned_count
+            after_size = before_size - cleaned_size
+            self.log('info', f"截图目录清理完成: 清理前 {before_count} 个文件 ({before_size / 1024:.1f}KB)，清理后 {after_count} 个文件 ({after_size / 1024:.1f}KB)，清理了 {cleaned_count} 个文件 ({cleaned_size / 1024:.1f}KB)")
     
     def load_config(self):
         """加载配置文件
@@ -162,6 +193,25 @@ class CheckinSkill:
             print(f"加载配置文件失败: {e}")
             # 返回默认配置
             return self.get_default_config()
+    
+    def get_config(self, path, default=None):
+        """获取配置值
+        Args:
+            path: 配置路径，如 "general.package_name"
+            default: 默认值
+        Returns:
+            配置值
+        """
+        keys = path.split('.')
+        value = self.config
+        
+        for key in keys:
+            if isinstance(value, dict) and key in value:
+                value = value[key]
+            else:
+                return default
+        
+        return value
     
     def get_default_config(self):
         """获取默认配置
@@ -255,6 +305,12 @@ class CheckinSkill:
                 "page_load": 3,
                 "click_wait": 2,
                 "checkin_wait": 5
+            },
+            "screenshot": {
+                "enabled": False,
+                "debug": True,
+                "compress": True,
+                "quality": 50
             }
         }
     
@@ -273,7 +329,7 @@ class CheckinSkill:
         try:
             # 只在verbose模式下输出详细日志
             if verbose:
-                print(f"执行ADB命令: {' '.join(full_command)}")
+                self.log('debug', f"执行ADB命令: {' '.join(full_command)}")
             result = subprocess.run(
                 full_command,
                 capture_output=capture_output,
@@ -282,7 +338,7 @@ class CheckinSkill:
             )
             # 只在verbose模式下输出命令输出
             if verbose and capture_output and result.stdout:
-                print(f"命令输出: {result.stdout.strip()}")
+                self.log('debug', f"命令输出: {result.stdout.strip()}")
             return result
         except subprocess.CalledProcessError as e:
             self.log('error', f"ADB命令执行失败: {e}")
@@ -302,11 +358,11 @@ class CheckinSkill:
             file_path: 要清除的缓存文件路径
         """
         # 清除UI缓存
-        self.ui_cache.pop(file_path, None)
+        self.cache['ui'].pop(file_path, None)
         # 清除相关的文件缓存
-        for key in list(self.file_cache.keys()):
+        for key in list(self.cache['file'].keys()):
             if os.path.basename(file_path) in key:
-                self.file_cache.pop(key, None)
+                self.cache['file'].pop(key, None)
 
     def wait_for_element(self, text, timeout=10, check_interval=1):
         """等待特定UI元素出现
@@ -347,10 +403,12 @@ class CheckinSkill:
         """
         # 检查缓存是否有效
         current_time = time.time()
-        if output_file in self.ui_cache and (current_time - self.cache_timestamp) < self.cache_ttl:
-            self.log('debug', f"使用缓存的UI层级: {output_file}")
-            self.cache_hits += 1
-            return True, True
+        if output_file in self.cache['ui']:
+            cache_entry = self.cache['ui'][output_file]
+            if (current_time - cache_entry['timestamp']) < self.cache_ttl:
+                self.log('debug', f"使用缓存的UI层级: {output_file}")
+                self.cache_stats['hits'] += 1
+                return True, True
         
         # 执行dump操作
         self.log('info', f"导出UI层级到: {output_file}")
@@ -360,9 +418,11 @@ class CheckinSkill:
         
         # 更新缓存
         if result is not None:
-            self.ui_cache[output_file] = True
-            self.cache_timestamp = current_time
-            self.cache_misses += 1
+            self.cache['ui'][output_file] = {
+                'timestamp': current_time,
+                'valid': True
+            }
+            self.cache_stats['misses'] += 1
         
         return result is not None, False
     
@@ -377,14 +437,14 @@ class CheckinSkill:
             bool: 是否成功
         """
         # 检查文件缓存
-        cache_key = f"file:{remote_path}:{local_path}"
+        cache_key = f"{remote_path}:{local_path}"
         current_time = time.time()
         
-        if not force_refresh and cache_key in self.file_cache:
-            cache_entry = self.file_cache[cache_key]
+        if not force_refresh and cache_key in self.cache['file']:
+            cache_entry = self.cache['file'][cache_key]
             if (current_time - cache_entry['timestamp']) < self.cache_ttl and os.path.exists(local_path):
                 print(f"使用缓存的文件: {local_path}")
-                self.cache_hits += 1
+                self.cache_stats['hits'] += 1
                 return True
         
         try:
@@ -393,11 +453,11 @@ class CheckinSkill:
             if result:
                 print(f"文件拉取成功: {local_path}")
                 # 更新文件缓存
-                self.file_cache[cache_key] = {
+                self.cache['file'][cache_key] = {
                     'timestamp': current_time,
                     'path': local_path
                 }
-                self.cache_misses += 1
+                self.cache_stats['misses'] += 1
                 return True
             else:
                 print("文件拉取失败: 命令执行失败")
@@ -450,21 +510,22 @@ class CheckinSkill:
             file_mtime = os.path.getmtime(xml_path)
             
             # 检查缓存是否有效
-            if xml_path in self.ui_cache and isinstance(self.ui_cache[xml_path], dict) and self.ui_cache[xml_path]['mtime'] == file_mtime:
+            if xml_path in self.cache['ui'] and isinstance(self.cache['ui'][xml_path], dict) and self.cache['ui'][xml_path].get('mtime') == file_mtime:
                 print(f"使用缓存的XML内容: {xml_path}")
-                self.cache_hits += 1
-                return self.ui_cache[xml_path]['content']
+                self.cache_stats['hits'] += 1
+                return self.cache['ui'][xml_path]['content']
             
             # 读取文件内容
             with open(xml_path, 'r', encoding='utf-8') as f:
                 content = f.read()
             
             # 更新缓存
-            self.ui_cache[xml_path] = {
+            self.cache['ui'][xml_path] = {
                 'content': content,
-                'mtime': file_mtime
+                'mtime': file_mtime,
+                'timestamp': time.time()
             }
-            self.cache_misses += 1
+            self.cache_stats['misses'] += 1
             
             return content
         except Exception as e:
@@ -481,9 +542,10 @@ class CheckinSkill:
         """
         # 缓存查找结果，避免重复查找
         cache_key = f"find_element:{text}"
-        if cache_key in self.ui_cache and isinstance(self.ui_cache[cache_key], tuple):
+        if cache_key in self.cache['ui'] and isinstance(self.cache['ui'][cache_key], tuple):
             print(f"使用缓存的元素位置: {text}")
-            return self.ui_cache[cache_key]
+            self.cache_stats['hits'] += 1
+            return self.cache['ui'][cache_key]
         
         try:
             pattern = r'text="' + re.escape(text) + r'"[^>]+bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"'
@@ -491,7 +553,8 @@ class CheckinSkill:
             if match:
                 bounds = (int(match.group(1)), int(match.group(2)), int(match.group(3)), int(match.group(4)))
                 # 缓存查找结果
-                self.ui_cache[cache_key] = bounds
+                self.cache['ui'][cache_key] = bounds
+                self.cache_stats['misses'] += 1
                 return bounds
             return None
         except Exception as e:
@@ -525,6 +588,35 @@ class CheckinSkill:
             return ((left + right) // 2, (top + bottom) // 2)
         return None
     
+    def wait_for_condition(self, condition_func, timeout=30, interval=0.5, description="条件"):
+        """等待条件满足
+        Args:
+            condition_func: 条件函数，返回 True 表示条件满足
+            timeout: 超时时间（秒）
+            interval: 检查间隔（秒）
+            description: 条件描述，用于日志输出
+        Returns:
+            bool: 是否在超时前条件满足
+        """
+        start_time = time.time()
+        while time.time() - start_time < timeout:
+            try:
+                if condition_func():
+                    self.log('info', f"条件满足: {description}")
+                    return True
+            except Exception as e:
+                self.log('debug', f"检查条件时出错: {e}")
+            
+            # 动态调整间隔，随着时间增加减少间隔
+            elapsed = time.time() - start_time
+            if elapsed < timeout * 0.5:
+                time.sleep(interval)
+            else:
+                time.sleep(interval / 2)
+        
+        self.log('warning', f"超时: 条件 {description} 未满足")
+        return False
+    
     def wait_for_element(self, text, timeout=30, interval=0.5):
         """等待元素出现
         Args:
@@ -534,39 +626,33 @@ class CheckinSkill:
         Returns:
             tuple: (left, top, right, bottom) 或 None
         """
-        start_time = time.time()
         xml_path = os.path.join(self.screenshot_dir, "window_dump.xml")
         
-        while time.time() - start_time < timeout:
-            try:
-                # 导出UI层级（会使用缓存）
-                self.dump_ui_hierarchy()
-                
-                # 拉取XML文件到本地
-                self.pull_file("/sdcard/window_dump.xml", xml_path)
-                
-                # 读取并分析XML文件（会使用缓存）
-                xml_content = self.parse_ui_xml(xml_path)
-                
-                # 查找元素
-                bounds = self.find_element_by_text(xml_content, text)
-                if bounds:
-                    return bounds
-                
-                # 动态调整间隔，随着时间增加减少间隔
-                elapsed = time.time() - start_time
-                if elapsed < timeout * 0.5:
-                    time.sleep(interval)
-                else:
-                    # 接近超时，减少间隔以提高响应速度
-                    time.sleep(interval / 2)
-            except Exception as e:
-                print(f"等待元素时出错: {e}")
-                time.sleep(interval)
+        def check_element():
+            # 导出UI层级（会使用缓存）
+            self.dump_ui_hierarchy()
+            
+            # 拉取XML文件到本地
+            self.pull_file("/sdcard/window_dump.xml", xml_path)
+            
+            # 读取并分析XML文件（会使用缓存）
+            xml_content = self.parse_ui_xml(xml_path)
+            
+            # 查找元素
+            bounds = self.find_element_by_text(xml_content, text)
+            return bounds is not None
+        
+        if self.wait_for_condition(check_element, timeout, interval, f"元素 '{text}' 出现"):
+            # 再次查找元素以返回其边界
+            self.dump_ui_hierarchy()
+            self.pull_file("/sdcard/window_dump.xml", xml_path)
+            xml_content = self.parse_ui_xml(xml_path)
+            return self.find_element_by_text(xml_content, text)
         
         print(f"等待元素 '{text}' 超时")
         return None
     
+    @handle_exception(default_return=None, log_level='warning')
     def take_screenshot(self, filename):
         """截图
         Args:
@@ -583,51 +669,47 @@ class CheckinSkill:
         
         # 如果截图未启用且不是debug模式，直接返回
         if not enabled and not debug:
-            print(f"截图已禁用，跳过: {filename}")
+            self.log('debug', f"截图已禁用，跳过: {filename}")
             return None
         
-        try:
-            filepath = os.path.join(self.screenshot_dir, filename)
-            # 截图到设备
-            self.execute_adb_command(["shell", "screencap", "/sdcard/screenshot.png"])
-            # 拉取到本地
-            self.execute_adb_command(["pull", "/sdcard/screenshot.png", filepath])
-            
-            # 压缩截图
-            if compress:
+        filepath = os.path.join(self.screenshot_dir, filename)
+        # 截图到设备
+        self.execute_adb_command(["shell", "screencap", "/sdcard/screenshot.png"])
+        # 拉取到本地
+        self.execute_adb_command(["pull", "/sdcard/screenshot.png", filepath])
+        
+        # 压缩截图
+        if compress:
+            try:
+                from PIL import Image
+                img = Image.open(filepath)
+                # 将RGBA转换为RGB格式
+                if img.mode == 'RGBA':
+                    img = img.convert('RGB')
+                # 压缩图片
+                img.save(filepath, 'JPEG', quality=quality)
+                self.log('info', f"截图已压缩并保存: {filepath}")
+            except ImportError:
+                self.log('warning', "Pillow库未安装，跳过压缩")
+            except Exception as e:
+                self.log('warning', f"压缩截图失败: {e}")
+                # 尝试使用PNG格式保存
                 try:
-                    from PIL import Image
-                    img = Image.open(filepath)
-                    # 将RGBA转换为RGB格式
-                    if img.mode == 'RGBA':
-                        img = img.convert('RGB')
-                    # 压缩图片
-                    img.save(filepath, 'JPEG', quality=quality)
-                    print(f"截图已压缩并保存: {filepath}")
-                except ImportError:
-                    print("Pillow库未安装，跳过压缩")
-                except Exception as e:
-                    print(f"压缩截图失败: {e}")
-                    # 尝试使用PNG格式保存
-                    try:
-                        if 'img' in locals():
-                            # 尝试使用PNG格式保存
-                            png_path = filepath.replace('.png', '.png')
-                            img.save(png_path, 'PNG')
-                            print(f"使用PNG格式保存截图: {png_path}")
-                        else:
-                            print("无法使用PNG格式保存，图片对象不存在")
-                    except Exception as e2:
-                        print(f"保存PNG格式失败: {e2}")
-                        # 尝试不压缩，直接使用原始截图
-                        print("使用原始截图，跳过压缩")
-            else:
-                print(f"截图已保存: {filepath}")
-            
-            return filepath
-        except Exception as e:
-            print(f"截图失败: {e}")
-            return None
+                    if 'img' in locals():
+                        # 尝试使用PNG格式保存
+                        png_path = filepath.replace('.png', '.png')
+                        img.save(png_path, 'PNG')
+                        self.log('info', f"使用PNG格式保存截图: {png_path}")
+                    else:
+                        self.log('warning', "无法使用PNG格式保存，图片对象不存在")
+                except Exception as e2:
+                    self.log('warning', f"保存PNG格式失败: {e2}")
+                    # 尝试不压缩，直接使用原始截图
+                    self.log('info', "使用原始截图，跳过压缩")
+        else:
+            self.log('info', f"截图已保存: {filepath}")
+        
+        return filepath
     
     def find_adb(self):
         """查找ADB工具路径"""
@@ -667,9 +749,13 @@ class CheckinSkill:
             return False
         
         # 缓存设备状态，避免重复执行ADB命令
-        if hasattr(self, '_device_status') and (time.time() - self._device_status['timestamp']) < 5:
-            print(f"使用缓存的设备状态: {self._device_status['devices']}")
-            return len(self._device_status['devices']) > 0
+        cache_key = 'device_status'
+        current_time = time.time()
+        if cache_key in self.cache['status']:
+            cache_entry = self.cache['status'][cache_key]
+            if (current_time - cache_entry['timestamp']) < 5:
+                print(f"使用缓存的设备状态: {cache_entry['devices']}")
+                return len(cache_entry['devices']) > 0
         
         result = self.execute_adb_command(["devices"])
         if result:
@@ -677,9 +763,9 @@ class CheckinSkill:
             running_devices = [device.split('\t')[0] for device in devices if 'device' in device]
             
             # 缓存设备状态
-            self._device_status = {
+            self.cache['status'][cache_key] = {
                 'devices': running_devices,
-                'timestamp': time.time()
+                'timestamp': current_time
             }
             
             if running_devices:
@@ -954,9 +1040,13 @@ class CheckinSkill:
     def is_app_running(self):
         """检查应用是否已经在运行"""
         # 缓存应用运行状态，避免重复执行ADB命令
-        if hasattr(self, '_app_running_status') and (time.time() - self._app_running_status['timestamp']) < 3:
-            print(f"使用缓存的应用运行状态: {self._app_running_status['running']}")
-            return self._app_running_status['running']
+        cache_key = 'app_running_status'
+        current_time = time.time()
+        if cache_key in self.cache['status']:
+            cache_entry = self.cache['status'][cache_key]
+            if (current_time - cache_entry['timestamp']) < 3:
+                print(f"使用缓存的应用运行状态: {cache_entry['running']}")
+                return cache_entry['running']
         
         try:
             result = self.execute_adb_command(["shell", "dumpsys", "activity", "activities"])
@@ -965,9 +1055,9 @@ class CheckinSkill:
                 running = self.package_name in result.stdout
             
             # 缓存应用运行状态
-            self._app_running_status = {
+            self.cache['status'][cache_key] = {
                 'running': running,
-                'timestamp': time.time()
+                'timestamp': current_time
             }
             
             return running
@@ -1004,20 +1094,16 @@ class CheckinSkill:
         
         # 使用基于事件的等待机制，等待应用启动
         print("等待应用启动...")
-        start_time = time.time()
         timeout = self.config['sleep_times'].get('app_start', 8)  # 减少超时时间
         interval = 0.5  # 减少检查间隔
         
-        while time.time() - start_time < timeout:
-            if self.is_app_running():
-                print("应用已成功启动")
-                break
-            # 动态调整间隔
-            elapsed = time.time() - start_time
-            if elapsed < timeout * 0.5:
-                time.sleep(interval)
-            else:
-                time.sleep(interval / 2)
+        def check_app_running():
+            return self.is_app_running()
+        
+        if self.wait_for_condition(check_app_running, timeout, interval, "应用启动"):
+            print("应用已成功启动")
+        else:
+            print("应用启动超时")
         
         # 等待应用完全激活（减少等待时间）
         time.sleep(self.config['sleep_times'].get('monkey_activate', 1))
@@ -1237,6 +1323,30 @@ class CheckinSkill:
             print(f"检查定位状态失败: {e}")
             return False
     
+    def parse_time(self, time_str):
+        """解析时间字符串
+        Args:
+            time_str: 时间字符串，格式为 "HH:MM"
+        Returns:
+            tuple: (小时, 分钟)
+        """
+        hour, minute = map(int, time_str.split(':'))
+        return hour, minute
+    
+    def is_time_in_range(self, checkin_hour, checkin_minute, start_time, end_time):
+        """检查时间是否在指定范围内
+        Args:
+            checkin_hour: 检查的小时
+            checkin_minute: 检查的分钟
+            start_time: 开始时间 (小时, 分钟)
+            end_time: 结束时间 (小时, 分钟)
+        Returns:
+            bool: 是否在范围内
+        """
+        return ((checkin_hour > start_time[0] and checkin_hour < end_time[0]) or \
+                (checkin_hour == start_time[0] and checkin_minute >= start_time[1]) or \
+                (checkin_hour == end_time[0] and checkin_minute <= end_time[1]))
+    
     def check_time_range(self):
         """检查当前时间是否在允许的打卡时间段内"""
         now = datetime.datetime.now()
@@ -1249,33 +1359,22 @@ class CheckinSkill:
         # 从配置中读取时间范围
         time_ranges = self.config['time_ranges']
         
-        # 解析时间范围
-        def parse_time(time_str):
-            hour, minute = map(int, time_str.split(':'))
-            return hour, minute
-        
         # 早上上班签到
-        morning_start = parse_time(time_ranges['morning_checkin']['start'])
-        morning_end = parse_time(time_ranges['morning_checkin']['end'])
-        if (current_hour > morning_start[0] and current_hour < morning_end[0]) or \
-           (current_hour == morning_start[0] and current_minute >= morning_start[1]) or \
-           (current_hour == morning_end[0] and current_minute <= morning_end[1]):
+        morning_start = self.parse_time(time_ranges['morning_checkin']['start'])
+        morning_end = self.parse_time(time_ranges['morning_checkin']['end'])
+        if self.is_time_in_range(current_hour, current_minute, morning_start, morning_end):
             return "morning_checkin"
         
         # 中午午休打卡
-        noon_start = parse_time(time_ranges['noon_checkin']['start'])
-        noon_end = parse_time(time_ranges['noon_checkin']['end'])
-        if (current_hour > noon_start[0] and current_hour < noon_end[0]) or \
-           (current_hour == noon_start[0] and current_minute >= noon_start[1]) or \
-           (current_hour == noon_end[0] and current_minute <= noon_end[1]):
+        noon_start = self.parse_time(time_ranges['noon_checkin']['start'])
+        noon_end = self.parse_time(time_ranges['noon_checkin']['end'])
+        if self.is_time_in_range(current_hour, current_minute, noon_start, noon_end):
             return "noon_checkin"
         
         # 晚上下班签退
-        evening_start = parse_time(time_ranges['evening_checkout']['start'])
-        evening_end = parse_time(time_ranges['evening_checkout']['end'])
-        if (current_hour > evening_start[0] and current_hour < evening_end[0]) or \
-           (current_hour == evening_start[0] and current_minute >= evening_start[1]) or \
-           (current_hour == evening_end[0] and current_minute <= evening_end[1]):
+        evening_start = self.parse_time(time_ranges['evening_checkout']['start'])
+        evening_end = self.parse_time(time_ranges['evening_checkout']['end'])
+        if self.is_time_in_range(current_hour, current_minute, evening_start, evening_end):
             return "evening_checkout"
         
         else:
@@ -1326,27 +1425,22 @@ class CheckinSkill:
             # 检测打卡记录
             checkin_records = self.detect_checkin_records()
             
-            # 解析时间范围
-            def parse_time(time_str):
-                hour, minute = map(int, time_str.split(':'))
-                return hour, minute
-            
             # 获取当前时段的时间范围
             time_ranges = self.config['time_ranges']
             if time_range == "morning_checkin":
-                start_time = parse_time(time_ranges['morning_checkin']['start'])
-                end_time = parse_time(time_ranges['morning_checkin']['end'])
+                start_time = self.parse_time(time_ranges['morning_checkin']['start'])
+                end_time = self.parse_time(time_ranges['morning_checkin']['end'])
                 expected_types = ["智能签到", "签到"]
             elif time_range == "noon_checkin":
-                start_time = parse_time(time_ranges['noon_checkin']['start'])
-                end_time = parse_time(time_ranges['noon_checkin']['end'])
+                start_time = self.parse_time(time_ranges['noon_checkin']['start'])
+                end_time = self.parse_time(time_ranges['noon_checkin']['end'])
                 # 中午需要特殊处理，分别检查签退和签到
                 result = self.check_noon_checkin(checkin_records, start_time, end_time)
                 print("检查打卡记录完成")
                 return result
             elif time_range == "evening_checkout":
-                start_time = parse_time(time_ranges['evening_checkout']['start'])
-                end_time = parse_time(time_ranges['evening_checkout']['end'])
+                start_time = self.parse_time(time_ranges['evening_checkout']['start'])
+                end_time = self.parse_time(time_ranges['evening_checkout']['end'])
                 expected_types = ["签退"]
             else:
                 print("未知的时间范围")
@@ -1364,14 +1458,10 @@ class CheckinSkill:
                     checkin_type = type_match.group(1)
                     
                     # 解析打卡时间
-                    checkin_hour, checkin_minute = parse_time(checkin_time_str)
+                    checkin_hour, checkin_minute = self.parse_time(checkin_time_str)
                     
                     # 检查打卡时间是否在当前时段内
-                    is_in_range = False
-                    if (checkin_hour > start_time[0] and checkin_hour < end_time[0]) or \
-                       (checkin_hour == start_time[0] and checkin_minute >= start_time[1]) or \
-                       (checkin_hour == end_time[0] and checkin_minute <= end_time[1]):
-                        is_in_range = True
+                    is_in_range = self.is_time_in_range(checkin_hour, checkin_minute, start_time, end_time)
                     
                     # 检查打卡类型是否符合当前时段
                     if is_in_range and checkin_type in expected_types:
@@ -1399,11 +1489,6 @@ class CheckinSkill:
         """
         print("开始检查中午时段的打卡记录...")
         
-        # 解析时间范围
-        def parse_time(time_str):
-            hour, minute = map(int, time_str.split(':'))
-            return hour, minute
-        
         # 检查是否有签退记录
         has_checkout = False
         # 检查是否有签到记录
@@ -1419,14 +1504,10 @@ class CheckinSkill:
                 checkin_type = type_match.group(1)
                 
                 # 解析打卡时间
-                checkin_hour, checkin_minute = parse_time(checkin_time_str)
+                checkin_hour, checkin_minute = self.parse_time(checkin_time_str)
                 
                 # 检查打卡时间是否在中午时段内
-                is_in_range = False
-                if (checkin_hour > start_time[0] and checkin_hour < end_time[0]) or \
-                   (checkin_hour == start_time[0] and checkin_minute >= start_time[1]) or \
-                   (checkin_hour == end_time[0] and checkin_minute <= end_time[1]):
-                    is_in_range = True
+                is_in_range = self.is_time_in_range(checkin_hour, checkin_minute, start_time, end_time)
                 
                 if is_in_range:
                     if checkin_type == "签退":
@@ -1497,9 +1578,13 @@ class CheckinSkill:
             str: 页面状态，可能的值：'attendance', 'home', 'app_list', 'other'
         """
         # 缓存页面状态，避免重复执行ADB命令
-        if not force_refresh and hasattr(self, '_page_status') and (time.time() - self._page_status['timestamp']) < 5:
-            print(f"使用缓存的页面状态: {self._page_status['status']}")
-            return self._page_status['status']
+        cache_key = 'page_status'
+        current_time = time.time()
+        if not force_refresh and cache_key in self.cache['status']:
+            cache_entry = self.cache['status'][cache_key]
+            if (current_time - cache_entry['timestamp']) < 5:
+                print(f"使用缓存的页面状态: {cache_entry['status']}")
+                return cache_entry['status']
         
         # 直接使用UIAutomator判断页面状态，减少对Activity的依赖
         try:
@@ -1556,7 +1641,7 @@ class CheckinSkill:
                 status = 'other'
             
             # 缓存页面状态
-            self._page_status = {
+            self.cache['status'][cache_key] = {
                 'status': status,
                 'timestamp': time.time()
             }
@@ -1777,86 +1862,87 @@ class CheckinSkill:
             print(f"检测打卡记录时出错: {e}")
             return []
     
-    def run(self, user_confirm_callback=None):
-        """运行打卡流程
+    def build_message(self, base_message, checkin_records):
+        """构建包含打卡记录的消息
         Args:
-            user_confirm_callback: 回调函数，用于获取用户确认
+            base_message: 基础消息
+            checkin_records: 打卡记录列表
         Returns:
-            dict: 打卡结果
+            str: 包含打卡记录的消息
         """
-        print("=== 开始打卡流程 ===")
-        result = {
-            "success": False,
-            "message": "",
-            "screenshots": {},
-            "checkin_records": []
-        }
-        
-        # 第一步：检查模拟器是否存在，不存在则创建
+        message = base_message
+        if checkin_records:
+            message += "\n最新打卡记录:"
+            for i, record in enumerate(checkin_records):
+                message += f"\n  {i+1}. {record}"
+        return message
+    
+    def setup_emulator(self):
+        """设置模拟器
+        Returns:
+            tuple: (是否成功, 错误消息)
+        """
+        # 检查模拟器是否存在，不存在则创建
         if not self.check_emulator_exists():
             if not self.create_emulator():
-                result["message"] = "无法创建模拟器，流程终止"
-                print(result["message"])
-                return result
+                return False, "无法创建模拟器，流程终止"
         
-        # 第二步：检查模拟器状态并启动
+        # 检查模拟器状态并启动
         if not self.check_emulator_status():
             if not self.start_emulator():
-                result["message"] = "无法启动模拟器，流程终止"
-                print(result["message"])
-                return result
+                return False, "无法启动模拟器，流程终止"
             time.sleep(10)  # 等待模拟器启动
         
-        # 第三步：启动纷享销客
+        return True, ""
+    
+    def prepare_checkin(self):
+        """准备打卡
+        Returns:
+            tuple: (是否成功, 错误消息, 打卡记录, 截图路径)
+        """
+        # 启动纷享销客
         if not self.start_fxiaoke():
-            result["message"] = "无法启动纷享销客，流程终止"
-            print(result["message"])
-            return result
+            return False, "无法启动纷享销客，流程终止", [], None
         
-        # 第四步：进入考勤页面
+        # 进入考勤页面
         if not self.navigate_to_attendance():
-            result["message"] = "无法进入考勤页面，流程终止"
-            print(result["message"])
-            return result
+            return False, "无法进入考勤页面，流程终止", [], None
         
         # 检查考勤页面日期是否为当天
         is_today = self.check_attendance_date()
         if not is_today:
-            result["message"] = "考勤页面日期不是当天，流程终止"
-            print(result["message"])
-            return result
+            return False, "考勤页面日期不是当天，流程终止", [], None
         
         # 检测打卡记录
         checkin_records = self.detect_checkin_records()
-        result["checkin_records"] = checkin_records
         
-        # 第五步：检查打卡状态
+        # 截图
         screenshot_path = self.take_screenshot("before_checkin.png")
-        if screenshot_path:
-            result["screenshots"]["before"] = screenshot_path
-        else:
+        if not screenshot_path:
             print("截图已禁用，跳过截图操作")
         
+        return True, "", checkin_records, screenshot_path
+    
+    def check_checkin_status(self, checkin_records, screenshot_path):
+        """检查打卡状态
+        Args:
+            checkin_records: 打卡记录列表
+            screenshot_path: 截图路径
+        Returns:
+            tuple: (是否可以打卡, 错误消息, 时间范围, 状态信息)
+        """
         # 先检查时间范围，避免不必要的定位状态检查
         time_range = self.check_time_range()
         
         # 检查是否在打卡范围内
         if time_range == "out_of_range":
-            result["message"] = "当前时间不在打卡范围内，不需要打卡"
-            print(result["message"])
-            result["success"] = True
-            return result
+            return False, "当前时间不在打卡范围内，不需要打卡", time_range, None
         
         # 检查当前时段内是否已经打过卡
         if self.check_existing_checkin():
-            result["message"] = "当前时段内已经打过卡，跳过打卡操作"
-            print(result["message"])
             # 截图当前页面
             screenshot_path = self.take_screenshot("already_checked_in.png")
-            if screenshot_path:
-                result["screenshots"]["after"] = screenshot_path
-            result["success"] = True
-            return result
+            return False, "当前时段内已经打过卡，跳过打卡操作", time_range, None
         
         # 检查定位状态和按钮状态
         location_status = self.check_location_status(screenshot_path)
@@ -1881,27 +1967,77 @@ class CheckinSkill:
         
         # 检查是否可以打卡（定位状态）
         if not location_status:
-            result["message"] = "未进入地点考勤范围，无法打卡"
+            return False, "未进入地点考勤范围，无法打卡", time_range, None
+        
+        return True, "", time_range, status_info
+    
+    def perform_checkin_operation(self, time_range):
+        """执行打卡操作
+        Args:
+            time_range: 时间范围
+        Returns:
+            bool: 是否成功
+        """
+        if time_range == "noon_checkin":
+            # 中午需要签退1次+签到1次
+            print("执行中午打卡流程: 签退1次 + 签到1次")
+            # 第一次点击（签退）
+            if not self.perform_checkin():
+                return False
+            time.sleep(2)
+            # 第二次点击（签到）
+            if not self.perform_checkin():
+                return False
+        else:
+            # 其他时间只需要打卡1次
+            if not self.perform_checkin():
+                return False
+        
+        return True
+    
+    def run(self, user_confirm_callback=None):
+        """运行打卡流程
+        Args:
+            user_confirm_callback: 回调函数，用于获取用户确认
+        Returns:
+            dict: 打卡结果
+        """
+        print("=== 开始打卡流程 ===")
+        result = {
+            "success": False,
+            "message": "",
+            "screenshots": {},
+            "checkin_records": []
+        }
+        
+        # 第一步：设置模拟器
+        success, message = self.setup_emulator()
+        if not success:
+            result["message"] = message
             print(result["message"])
             return result
         
-        # 构建包含打卡记录的消息
-        def build_message(base_message):
-            """构建包含打卡记录的消息"""
-            message = base_message
-            if checkin_records:
-                message += "\n最新打卡记录:"
-                for i, record in enumerate(checkin_records):
-                    message += f"\n  {i+1}. {record}"
-            return message
-        
-        if time_range == "out_of_range":
-            result["success"] = True
-            result["message"] = build_message("当前时间不在打卡范围内，只汇报情况，不补签")
+        # 第二步：准备打卡
+        success, message, checkin_records, screenshot_path = self.prepare_checkin()
+        if not success:
+            result["message"] = message
             print(result["message"])
             return result
         
-        # 第六步：用户确认
+        result["checkin_records"] = checkin_records
+        if screenshot_path:
+            result["screenshots"]["before"] = screenshot_path
+        
+        # 第三步：检查打卡状态
+        can_checkin, message, time_range, status_info = self.check_checkin_status(checkin_records, screenshot_path)
+        if not can_checkin:
+            result["message"] = self.build_message(message, checkin_records)
+            print(result["message"])
+            if message == "当前时段内已经打过卡，跳过打卡操作":
+                result["success"] = True
+            return result
+        
+        # 第四步：用户确认
         if user_confirm_callback:
             user_confirm = user_confirm_callback(status_info)
         else:
@@ -1910,33 +2046,17 @@ class CheckinSkill:
             user_confirm = user_confirm.lower() == 'y'
         
         if not user_confirm:
-            result["message"] = build_message("用户取消打卡")
+            result["message"] = self.build_message("用户取消打卡", checkin_records)
             print(result["message"])
             return result
         
-        # 第七步：执行打卡
-        if time_range == "noon_checkin":
-            # 中午需要签退1次+签到1次
-            print("执行中午打卡流程: 签退1次 + 签到1次")
-            # 第一次点击（签退）
-            if not self.perform_checkin():
-                result["message"] = build_message("签退失败")
-                print(result["message"])
-                return result
-            time.sleep(2)
-            # 第二次点击（签到）
-            if not self.perform_checkin():
-                result["message"] = build_message("签到失败")
-                print(result["message"])
-                return result
-        else:
-            # 其他时间只需要打卡1次
-            if not self.perform_checkin():
-                result["message"] = build_message("打卡失败")
-                print(result["message"])
-                return result
+        # 第五步：执行打卡
+        if not self.perform_checkin_operation(time_range):
+            result["message"] = self.build_message("打卡失败", checkin_records)
+            print(result["message"])
+            return result
         
-        # 第七步：汇报结果
+        # 第六步：汇报结果
         time.sleep(2)
         result_screenshot = self.take_screenshot("after_checkin.png")
         result["screenshots"]["after"] = result_screenshot
@@ -1945,11 +2065,11 @@ class CheckinSkill:
         updated_checkin_records = self.detect_checkin_records()
         if updated_checkin_records:
             checkin_records = updated_checkin_records
-        result["message"] = build_message(f"打卡完成！结果截图已保存至: {result_screenshot}")
+        result["message"] = self.build_message(f"打卡完成！结果截图已保存至: {result_screenshot}", checkin_records)
         # 输出缓存统计信息
-        total_cache = self.cache_hits + self.cache_misses
-        cache_hit_rate = (self.cache_hits / total_cache * 100) if total_cache > 0 else 0
-        print(f"缓存统计: 命中={self.cache_hits}, 未命中={self.cache_misses}, 命中率={cache_hit_rate:.1f}%")
+        total_cache = self.cache_stats['hits'] + self.cache_stats['misses']
+        cache_hit_rate = (self.cache_stats['hits'] / total_cache * 100) if total_cache > 0 else 0
+        print(f"缓存统计: 命中={self.cache_stats['hits']}, 未命中={self.cache_stats['misses']}, 命中率={cache_hit_rate:.1f}%")
         
         print(result["message"])
         print("=== 打卡流程结束 ===")
