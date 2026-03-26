@@ -1066,6 +1066,146 @@ class CheckinSkill:
             print(f"检查按钮状态失败: {e}")
             return "签到"
     
+    def check_existing_checkin(self):
+        """检查当前时段内是否已经打过卡
+        Returns:
+            bool: 是否已在当前时段内打卡
+        """
+        print("开始检查当前时段内是否已经打过卡...")
+        try:
+            # 获取当前时间范围
+            time_range = self.check_time_range()
+            if time_range == "out_of_range":
+                print("当前时间不在打卡范围内")
+                print("检查打卡记录完成")
+                return False
+            
+            # 检测打卡记录
+            checkin_records = self.detect_checkin_records()
+            
+            # 解析时间范围
+            def parse_time(time_str):
+                hour, minute = map(int, time_str.split(':'))
+                return hour, minute
+            
+            # 获取当前时段的时间范围
+            time_ranges = self.config['time_ranges']
+            if time_range == "morning_checkin":
+                start_time = parse_time(time_ranges['morning_checkin']['start'])
+                end_time = parse_time(time_ranges['morning_checkin']['end'])
+                expected_types = ["智能签到", "签到"]
+            elif time_range == "noon_checkin":
+                start_time = parse_time(time_ranges['noon_checkin']['start'])
+                end_time = parse_time(time_ranges['noon_checkin']['end'])
+                # 中午需要特殊处理，分别检查签退和签到
+                result = self.check_noon_checkin(checkin_records, start_time, end_time)
+                print("检查打卡记录完成")
+                return result
+            elif time_range == "evening_checkout":
+                start_time = parse_time(time_ranges['evening_checkout']['start'])
+                end_time = parse_time(time_ranges['evening_checkout']['end'])
+                expected_types = ["签退"]
+            else:
+                print("未知的时间范围")
+                print("检查打卡记录完成")
+                return False
+            
+            # 检查每条打卡记录
+            for record in checkin_records:
+                # 提取时间和类型
+                time_match = re.search(r'(\d{2}:\d{2})', record)
+                type_match = re.search(r'(智能签到|签到|签退)', record)
+                
+                if time_match and type_match:
+                    checkin_time_str = time_match.group(1)
+                    checkin_type = type_match.group(1)
+                    
+                    # 解析打卡时间
+                    checkin_hour, checkin_minute = parse_time(checkin_time_str)
+                    
+                    # 检查打卡时间是否在当前时段内
+                    is_in_range = False
+                    if (checkin_hour > start_time[0] and checkin_hour < end_time[0]) or \
+                       (checkin_hour == start_time[0] and checkin_minute >= start_time[1]) or \
+                       (checkin_hour == end_time[0] and checkin_minute <= end_time[1]):
+                        is_in_range = True
+                    
+                    # 检查打卡类型是否符合当前时段
+                    if is_in_range and checkin_type in expected_types:
+                        print(f"在当前时段内已找到打卡记录: {record}")
+                        print("检查打卡记录完成")
+                        return True
+            
+            print("当前时段内未找到打卡记录")
+            print("检查打卡记录完成")
+            return False
+        except Exception as e:
+            print(f"检查打卡记录失败: {e}")
+            print("检查打卡记录完成")
+            return False
+    
+    def check_noon_checkin(self, checkin_records, start_time, end_time):
+        """检查中午时段的打卡记录
+        中午需要打两次卡：签退和签到
+        Args:
+            checkin_records: 打卡记录列表
+            start_time: 开始时间 (小时, 分钟)
+            end_time: 结束时间 (小时, 分钟)
+        Returns:
+            bool: 是否已完成中午的所有打卡
+        """
+        print("开始检查中午时段的打卡记录...")
+        
+        # 解析时间范围
+        def parse_time(time_str):
+            hour, minute = map(int, time_str.split(':'))
+            return hour, minute
+        
+        # 检查是否有签退记录
+        has_checkout = False
+        # 检查是否有签到记录
+        has_checkin = False
+        
+        for record in checkin_records:
+            # 提取时间和类型
+            time_match = re.search(r'(\d{2}:\d{2})', record)
+            type_match = re.search(r'(智能签到|签到|签退)', record)
+            
+            if time_match and type_match:
+                checkin_time_str = time_match.group(1)
+                checkin_type = type_match.group(1)
+                
+                # 解析打卡时间
+                checkin_hour, checkin_minute = parse_time(checkin_time_str)
+                
+                # 检查打卡时间是否在中午时段内
+                is_in_range = False
+                if (checkin_hour > start_time[0] and checkin_hour < end_time[0]) or \
+                   (checkin_hour == start_time[0] and checkin_minute >= start_time[1]) or \
+                   (checkin_hour == end_time[0] and checkin_minute <= end_time[1]):
+                    is_in_range = True
+                
+                if is_in_range:
+                    if checkin_type == "签退":
+                        print(f"在中午时段内已找到签退记录: {record}")
+                        has_checkout = True
+                    elif checkin_type in ["智能签到", "签到"]:
+                        print(f"在中午时段内已找到签到记录: {record}")
+                        has_checkin = True
+        
+        # 中午需要同时有签退和签到记录才算完成
+        if has_checkout and has_checkin:
+            print("中午时段已经完成签退和签到，跳过打卡操作")
+            print("中午时段打卡记录检查完成")
+            return True
+        else:
+            if not has_checkout:
+                print("中午时段尚未签退，需要打卡")
+            if not has_checkin:
+                print("中午时段尚未签到，需要打卡")
+            print("中午时段打卡记录检查完成")
+            return False
+    
     def get_current_activity(self):
         """获取当前页面的Activity名称"""
         try:
@@ -1412,10 +1552,28 @@ class CheckinSkill:
             for i, record in enumerate(checkin_records):
                 print(f"  {i+1}. {record}")
         
+        # 检查是否在打卡范围内
+        if time_range == "out_of_range":
+            result["message"] = "当前时间不在打卡范围内，不需要打卡"
+            print(result["message"])
+            result["success"] = True
+            return result
+        
         # 检查是否可以打卡
         if not location_status:
             result["message"] = "未进入地点考勤范围，无法打卡"
             print(result["message"])
+            return result
+        
+        # 检查当前时段内是否已经打过卡
+        if self.check_existing_checkin():
+            result["message"] = "当前时段内已经打过卡，跳过打卡操作"
+            print(result["message"])
+            # 截图当前页面
+            screenshot_path = self.take_screenshot("already_checked_in.png")
+            if screenshot_path:
+                result["screenshots"]["after"] = screenshot_path
+            result["success"] = True
             return result
         
         # 构建包含打卡记录的消息
