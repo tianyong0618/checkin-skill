@@ -305,11 +305,12 @@ class CheckinSkill:
         return result is not None, False
     
     @retry(max_attempts=3, delay=1, backoff=1.5)
-    def pull_file(self, remote_path, local_path):
+    def pull_file(self, remote_path, local_path, force_refresh=False):
         """从设备拉取文件
         Args:
             remote_path: 设备上的文件路径
             local_path: 本地保存路径
+            force_refresh: 是否强制刷新，不使用缓存
         Returns:
             bool: 是否成功
         """
@@ -317,7 +318,7 @@ class CheckinSkill:
         cache_key = f"file:{remote_path}:{local_path}"
         current_time = time.time()
         
-        if cache_key in self.file_cache:
+        if not force_refresh and cache_key in self.file_cache:
             cache_entry = self.file_cache[cache_key]
             if (current_time - cache_entry['timestamp']) < self.cache_ttl and os.path.exists(local_path):
                 print(f"使用缓存的文件: {local_path}")
@@ -745,12 +746,17 @@ class CheckinSkill:
     
     @retry(max_attempts=3, delay=2, backoff=1.5)
     def navigate_to_attendance(self):
-        """进入考勤页面"""
-        print("进入考勤页面...")
+        """导航到考勤页面"""
+        print("导航到考勤页面...")
         xml_path = os.path.join(self.screenshot_dir, "window_dump.xml")
         
         # 第一步：判断当前页面状态
         page_status = self.check_page_status()
+        
+        # 如果已经是考勤页面，直接返回
+        if page_status == 'attendance':
+            print("当前已经是考勤页面")
+            return True
         
         # 根据页面状态执行不同操作
         if page_status == 'other':
@@ -764,50 +770,49 @@ class CheckinSkill:
             if page_status != 'home':
                 print("未能回到首页，导航终止")
                 return False
-        elif page_status == 'home':
-            # 是首页，导航到考勤页面
-            print("当前页面是首页，导航到考勤页面...")
-            
+        
+        # 现在页面状态是 home 或 app_list，尝试导航到考勤页面
+        if page_status in ['home', 'app_list']:
             # 使用UIAutomator查找考勤选项
             success, used_cache = self.dump_ui_hierarchy()
             if not used_cache:
                 self.pull_file("/sdcard/window_dump.xml", xml_path)
             xml_content = self.parse_ui_xml(xml_path)
             
-            # 检查是否是企信页面（首页），如果是，先点击"应用"按钮
-            qixin_text = self.config['ui']['texts']['qixin']
-            if qixin_text in xml_content:
-                print(f"当前是{qixin_text}页面，点击应用按钮...")
-                # 尝试使用基于UI元素的定位找到应用按钮
-                app_text = self.config['ui']['texts']['app']
-                app_bounds = self.find_element_by_text(xml_content, app_text)
-                
-                if app_bounds:
-                    # 使用UI元素定位
-                    x, y = self.get_element_center(app_bounds)
-                    print(f"找到应用按钮，坐标: ({x}, {y})")
-                    self.execute_adb_command(["shell", "input", "tap", str(x), str(y)])
-                    # 减少等待时间
-                    time.sleep(self.config['sleep_times'].get('click_wait', 1))
-                else:
-                    # 备用方案：使用配置的坐标
-                    app_button_coordinates = self.config['coordinates']['app_button']
-                    for coord in app_button_coordinates:
-                        x, y = coord
-                        print(f"尝试点击应用按钮，坐标: ({x}, {y})")
+            # 如果是首页，先点击"应用"按钮
+            if page_status == 'home':
+                qixin_text = self.config['ui']['texts']['qixin']
+                if qixin_text in xml_content:
+                    print(f"当前是{qixin_text}页面，点击应用按钮...")
+                    # 尝试使用基于UI元素的定位找到应用按钮
+                    app_text = self.config['ui']['texts']['app']
+                    app_bounds = self.find_element_by_text(xml_content, app_text)
+                    
+                    if app_bounds:
+                        # 使用UI元素定位
+                        x, y = self.get_element_center(app_bounds)
+                        print(f"找到应用按钮，坐标: ({x}, {y})")
                         self.execute_adb_command(["shell", "input", "tap", str(x), str(y)])
                         # 减少等待时间
                         time.sleep(self.config['sleep_times'].get('click_wait', 1))
-                        # 不立即检查，减少dump次数
-            
-            # 等待应用页面加载
-            time.sleep(self.config['sleep_times'].get('page_load', 2))  # 减少等待时间
-            
-            # 再次dump界面层级，查找考勤选项
-            success, used_cache = self.dump_ui_hierarchy()
-            if not used_cache:
-                self.pull_file("/sdcard/window_dump.xml", xml_path)
-            xml_content = self.parse_ui_xml(xml_path)
+                    else:
+                        # 备用方案：使用配置的坐标
+                        app_button_coordinates = self.config['coordinates']['app_button']
+                        for coord in app_button_coordinates:
+                            x, y = coord
+                            print(f"尝试点击应用按钮，坐标: ({x}, {y})")
+                            self.execute_adb_command(["shell", "input", "tap", str(x), str(y)])
+                            # 减少等待时间
+                            time.sleep(self.config['sleep_times'].get('click_wait', 1))
+                    
+                    # 等待应用页面加载
+                    time.sleep(self.config['sleep_times'].get('page_load', 2))  # 减少等待时间
+                    
+                    # 再次dump界面层级，查找考勤选项
+                    success, used_cache = self.dump_ui_hierarchy()
+                    if not used_cache:
+                        self.pull_file("/sdcard/window_dump.xml", xml_path)
+                    xml_content = self.parse_ui_xml(xml_path)
             
             # 查找包含"考勤"的元素
             attendance_text = self.config['ui']['texts']['attendance']
@@ -818,73 +823,24 @@ class CheckinSkill:
                 x, y = self.get_element_center(attendance_bounds)
                 
                 # 点击考勤选项
+                print(f"点击考勤按钮...")
+                print(f"找到考勤按钮，坐标: ({x}, {y})")
                 self.execute_adb_command(["shell", "input", "tap", str(x), str(y)])
-                # 减少等待时间
-                time.sleep(self.config['sleep_times'].get('checkin_wait', 3))
                 
-                # 再次检查页面状态，看是否已经进入考勤页面（强制刷新）
-                current_status = self.check_page_status(force_refresh=True)
-                if current_status != 'attendance':
-                    # 尝试使用更精确的坐标点击
-                    offsets = self.config['ui']['offsets']
-                    for offset in offsets:
-                        offset_x = x + offset[0]
-                        offset_y = y + offset[1]
-                        self.execute_adb_command(["shell", "input", "tap", str(offset_x), str(offset_y)])
-                        # 减少等待时间
-                        time.sleep(self.config['sleep_times'].get('click_wait', 1))
-                        
-                        # 再次检查页面状态（强制刷新）
-                        current_status = self.check_page_status(force_refresh=True)
-                        if current_status == 'attendance':
-                            break
-            else:
-                # 尝试使用更精确的坐标点击，重点点击顶部区域
-                current_status = 'home'
-                attendance_coords = self.config['ui']['attendance_coordinates']
-                x_coords = attendance_coords['x']
-                y_coords = attendance_coords['y']
-                
-                for x in x_coords:
-                    for y in y_coords:
-                        self.execute_adb_command(["shell", "input", "tap", str(x), str(y)])
-                        # 减少等待时间
-                        time.sleep(self.config['sleep_times'].get('click_wait', 1))
-                        
-                        # 再次检查页面状态，看是否已经进入考勤页面
-                        current_status = self.check_page_status()
-                        if current_status == 'attendance':
-                            break
-                    if current_status == 'attendance':
-                        break
-        elif page_status == 'app_list':
-            # 已经在应用列表页面，直接点击考勤选项
-            print("当前已经在应用列表页面，直接点击考勤选项...")
-            
-            # 使用UIAutomator查找考勤选项
-            success, used_cache = self.dump_ui_hierarchy()
-            if not used_cache:
-                self.pull_file("/sdcard/window_dump.xml", xml_path)
-            xml_content = self.parse_ui_xml(xml_path)
-            
-            # 查找包含"考勤"的元素
-            attendance_text = self.config['ui']['texts']['attendance']
-            attendance_bounds = self.find_element_by_text(xml_content, attendance_text)
-            
-            current_status = 'app_list'
-            if attendance_bounds:
-                # 计算中心点坐标
-                x, y = self.get_element_center(attendance_bounds)
-                
-                # 点击考勤选项
-                self.execute_adb_command(["shell", "input", "tap", str(x), str(y)])
-                # 减少等待时间
-                time.sleep(self.config['sleep_times'].get('checkin_wait', 3))
+                # 增加等待时间，确保页面完全加载
+                # wait_time = 2
+                # print(f"等待{wait_time}秒，确保页面完全加载...")
+                # time.sleep(wait_time)
                 
                 # 检查页面状态（强制刷新）
                 current_status = self.check_page_status(force_refresh=True)
-                if current_status != 'attendance':
+                print(f"点击考勤按钮后页面状态: {current_status}")
+                if current_status == 'attendance':
+                    print("导航到考勤页面成功！")
+                    return True
+                else:
                     # 尝试使用更精确的坐标点击
+                    print("尝试使用更精确的坐标点击...")
                     offsets = self.config['ui']['offsets']
                     for offset in offsets:
                         offset_x = x + offset[0]
@@ -892,39 +848,34 @@ class CheckinSkill:
                         self.execute_adb_command(["shell", "input", "tap", str(offset_x), str(offset_y)])
                         # 减少等待时间
                         time.sleep(self.config['sleep_times'].get('click_wait', 1))
-                        
-                        # 再次检查页面状态（强制刷新）
-                        current_status = self.check_page_status(force_refresh=True)
-                        if current_status == 'attendance':
-                            break
+                    
+                    # 所有偏移点击后，再次检查页面状态（强制刷新）
+                    current_status = self.check_page_status(force_refresh=True)
+                    print(f"尝试偏移点击后页面状态: {current_status}")
+                    if current_status == 'attendance':
+                        print("导航到考勤页面成功！")
+                        return True
             else:
-                # 尝试使用更精确的坐标点击
+                # 尝试使用更精确的坐标点击，重点点击顶部区域
+                print("未找到考勤选项，尝试使用配置的坐标点击...")
                 attendance_coords = self.config['ui']['attendance_coordinates']
                 x_coords = attendance_coords['x']
                 y_coords = attendance_coords['y']
                 
+                # 记录所有尝试的坐标
                 for x in x_coords:
                     for y in y_coords:
                         self.execute_adb_command(["shell", "input", "tap", str(x), str(y)])
                         # 减少等待时间
                         time.sleep(self.config['sleep_times'].get('click_wait', 1))
-                        
-                        # 检查页面状态
-                        current_status = self.check_page_status()
-                        if current_status == 'attendance':
-                            break
-                    if current_status == 'attendance':
-                        break
-        elif page_status == 'attendance':
-            # 已经是考勤页面，直接进行日期检查
-            print("当前已经是考勤页面")
+                
+                # 所有坐标尝试后，检查页面状态（强制刷新）
+                current_status = self.check_page_status(force_refresh=True)
+                if current_status == 'attendance':
+                    print("导航到考勤页面成功！")
+                    return True
         
-        # 截图当前页面
-        test_screenshot = self.take_screenshot("test_attendance_page.png")
-        if test_screenshot:
-            print(f"截图当前页面到: {test_screenshot}")
-        
-        # 再次检查页面状态，确保最终在考勤页面（强制刷新）
+        # 最终检查页面状态（强制刷新）
         final_status = self.check_page_status(force_refresh=True)
         if final_status == 'attendance':
             print("导航到考勤页面成功！")
@@ -1251,39 +1202,49 @@ class CheckinSkill:
             # 强制刷新UI层级
             if force_refresh:
                 # 清除UI缓存
-                if 'window_dump.xml' in self.ui_cache:
-                    del self.ui_cache['window_dump.xml']
+                self.ui_cache = {}
+                print("清除所有UI缓存...")
                 # 重新dump界面层级
                 success, used_cache = self.dump_ui_hierarchy()
+                print(f"重新dump界面层级: 成功={success}, 使用缓存={used_cache}")
             else:
                 # 使用UIAutomator dump界面层级（会使用缓存）
                 success, used_cache = self.dump_ui_hierarchy()
             
             # 拉取XML文件到本地
             xml_path = os.path.join(self.screenshot_dir, "window_dump.xml")
-            self.pull_file("/sdcard/window_dump.xml", xml_path)
+            # 强制从设备拉取最新的XML文件，不使用缓存
+            self.pull_file("/sdcard/window_dump.xml", xml_path, force_refresh=force_refresh)
+            print(f"从设备拉取最新的XML文件到: {xml_path}")
             
             # 清除XML缓存，强制重新读取
-            if xml_path in self.ui_cache:
-                del self.ui_cache[xml_path]
+            self.ui_cache = {}
+            print("清除XML缓存...")
             # 读取并分析XML文件
             xml_content = self.parse_ui_xml(xml_path)
+            print(f"读取XML文件长度: {len(xml_content)} 字符")
             
             # 检查是否是纷享销客应用
             if 'com.facishare.fs' in xml_content:
-                # 检查是否包含考勤相关的文本，并且包含打卡时间、状态等考勤页面特有的元素
-                if '考勤' in xml_content and ('智能签到' in xml_content or '签退' in xml_content or '已进入地点考勤范围' in xml_content):
+                # 检查是否包含考勤相关的文本
+                has_attendance = '考勤' in xml_content
+                has_sign_in = '签到' in xml_content
+                has_sign_out = '签退' in xml_content
+                has_location = '已进入地点考勤范围' in xml_content
+                has_qixin = '企信' in xml_content
+                
+                # 输出调试信息
+                print(f"页面状态检查: 考勤={has_attendance}, 签到={has_sign_in}, 签退={has_sign_out}, 定位={has_location}, 企信={has_qixin}")
+                
+                # 检查是否是考勤页面（包含"考勤"标题，并且包含打卡记录或考勤状态）
+                if has_attendance and (has_sign_in or has_sign_out or has_location):
                     status = 'attendance'
                 
-                # 检查是否是应用列表页面（有考勤icon）
-                elif '考勤' in xml_content:
-                    status = 'app_list'
-                
-                # 检查是否是企信页面（首页，无考勤icon）
-                elif '企信' in xml_content:
+                # 检查是否是企信页面（首页）
+                elif has_qixin:
                     status = 'home'
                 
-                # 其他纷享销客页面
+                # 其他纷享销客页面（包括应用列表页面）
                 else:
                     status = 'other'
             else:
