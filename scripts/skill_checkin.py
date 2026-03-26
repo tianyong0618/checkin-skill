@@ -793,6 +793,9 @@ class CheckinSkill:
                         x, y = self.get_element_center(app_bounds)
                         print(f"找到应用按钮，坐标: ({x}, {y})")
                         self.execute_adb_command(["shell", "input", "tap", str(x), str(y)])
+                        # 清除UI缓存，确保下次dump时获取最新内容
+                        self.ui_cache.pop("/sdcard/window_dump.xml", None)
+                        self.file_cache.clear()  # 清除文件拉取缓存
                         # 减少等待时间
                         time.sleep(self.config['sleep_times'].get('click_wait', 1))
                     else:
@@ -802,6 +805,9 @@ class CheckinSkill:
                             x, y = coord
                             print(f"尝试点击应用按钮，坐标: ({x}, {y})")
                             self.execute_adb_command(["shell", "input", "tap", str(x), str(y)])
+                            # 清除UI缓存，确保下次dump时获取最新内容
+                            self.ui_cache.pop("/sdcard/window_dump.xml", None)
+                            self.file_cache.clear()  # 清除文件拉取缓存
                             # 减少等待时间
                             time.sleep(self.config['sleep_times'].get('click_wait', 1))
                     
@@ -826,6 +832,9 @@ class CheckinSkill:
                 print(f"点击考勤按钮...")
                 print(f"找到考勤按钮，坐标: ({x}, {y})")
                 self.execute_adb_command(["shell", "input", "tap", str(x), str(y)])
+                # 清除UI缓存，确保下次dump时获取最新内容
+                self.ui_cache.pop("/sdcard/window_dump.xml", None)
+                self.file_cache.clear()  # 清除文件拉取缓存
                 
                 # 增加等待时间，确保页面完全加载
                 # wait_time = 2
