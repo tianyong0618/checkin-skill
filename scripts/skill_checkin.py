@@ -961,27 +961,38 @@ class CheckinSkill:
             else:
                 print("定位服务未开启")
             
-            # 尝试通过UI元素检查是否显示「已进入地点考勤范围」
-            self.dump_ui_hierarchy()
-            xml_path = os.path.join(self.screenshot_dir, "window_dump.xml")
-            self.pull_file("/sdcard/window_dump.xml", xml_path)
-            xml_content = self.parse_ui_xml(xml_path)
+            start_time = time.time()
+            timeout = 60  # 60秒超时
             
-            location_in_range = self.config['ui']['texts']['location_in_range']
-            location_out_of_range = self.config['ui']['texts']['location_out_of_range']
+            while time.time() - start_time < timeout:
+                # 尝试通过UI元素检查定位状态
+                self.dump_ui_hierarchy()
+                xml_path = os.path.join(self.screenshot_dir, "window_dump.xml")
+                self.pull_file("/sdcard/window_dump.xml", xml_path)
+                xml_content = self.parse_ui_xml(xml_path)
+                
+                location_in_range = self.config['ui']['texts']['location_in_range']
+                location_out_of_range = self.config['ui']['texts']['location_out_of_range']
+                
+                if location_in_range in xml_content:
+                    print(location_in_range)
+                    return True
+                elif location_out_of_range in xml_content:
+                    print(location_out_of_range)
+                    return False
+                elif "正在定位中" in xml_content:
+                    print("正在定位中，等待3秒后重新检查...")
+                    time.sleep(3)
+                else:
+                    print("无法确定定位状态，等待3秒后重新检查...")
+                    time.sleep(3)
             
-            if location_in_range in xml_content:
-                print(location_in_range)
-                return True
-            elif location_out_of_range in xml_content:
-                print(location_out_of_range)
-                return False
-            else:
-                print("无法确定定位状态，默认返回True")
-                return True
+            # 超时
+            print("定位超时（60秒），返回False")
+            return False
         except Exception as e:
             print(f"检查定位状态失败: {e}")
-            return True
+            return False
     
     def check_time_range(self):
         """检查当前时间是否在允许的打卡时间段内"""
@@ -1003,22 +1014,25 @@ class CheckinSkill:
         # 早上上班签到
         morning_start = parse_time(time_ranges['morning_checkin']['start'])
         morning_end = parse_time(time_ranges['morning_checkin']['end'])
-        if (current_hour == morning_start[0] and current_minute >= morning_start[1]) or \
-           (current_hour == morning_end[0] and current_minute == morning_end[1]):
+        if (current_hour > morning_start[0] and current_hour < morning_end[0]) or \
+           (current_hour == morning_start[0] and current_minute >= morning_start[1]) or \
+           (current_hour == morning_end[0] and current_minute <= morning_end[1]):
             return "morning_checkin"
         
         # 中午午休打卡
         noon_start = parse_time(time_ranges['noon_checkin']['start'])
         noon_end = parse_time(time_ranges['noon_checkin']['end'])
-        if (current_hour == noon_start[0] and current_minute >= noon_start[1]) or \
-           (current_hour == noon_end[0] and current_minute == noon_end[1]):
+        if (current_hour > noon_start[0] and current_hour < noon_end[0]) or \
+           (current_hour == noon_start[0] and current_minute >= noon_start[1]) or \
+           (current_hour == noon_end[0] and current_minute <= noon_end[1]):
             return "noon_checkin"
         
         # 晚上下班签退
         evening_start = parse_time(time_ranges['evening_checkout']['start'])
         evening_end = parse_time(time_ranges['evening_checkout']['end'])
-        if (current_hour == evening_start[0] and current_minute >= evening_start[1]) or \
-           (current_hour == evening_end[0] and current_minute == evening_end[1]):
+        if (current_hour > evening_start[0] and current_hour < evening_end[0]) or \
+           (current_hour == evening_start[0] and current_minute >= evening_start[1]) or \
+           (current_hour == evening_end[0] and current_minute <= evening_end[1]):
             return "evening_checkout"
         
         else:
