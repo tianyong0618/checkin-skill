@@ -1948,9 +1948,18 @@ class CheckinSkill:
             
             # 尝试滚动屏幕以获取所有打卡记录
             # 先向下滚动几次，确保能看到上面的记录
-            for i in range(2):
+            for i in range(3):
                 self.execute_adb_command(["shell", "input", "swipe", "720", "500", "720", "1500", "500"])
                 time.sleep(1)
+            
+            # 再向上滚动几次，确保能看到下面的记录
+            for i in range(3):
+                self.execute_adb_command(["shell", "input", "swipe", "720", "1500", "720", "500", "500"])
+                time.sleep(1)
+            
+            # 最后再向下滚动一次，回到顶部
+            self.execute_adb_command(["shell", "input", "swipe", "720", "500", "720", "1500", "500"])
+            time.sleep(1)
             
             # 使用UIAutomator dump界面层级
             success, used_cache = self.dump_ui_hierarchy("/sdcard/attendance_dump.xml")
