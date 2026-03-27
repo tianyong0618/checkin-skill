@@ -781,6 +781,19 @@ class CheckinSkill:
         # 从配置中读取ADB路径，avdmanager通常在同一目录的上一级
         common_paths = self.config['adb']['common_paths']
         
+        # 尝试从新版cmdline-tools中查找
+        cmdline_tools_paths = [
+            "~/Library/ANDROID/SDK/cmdline-tools/latest/bin/avdmanager",
+            "/Users/tianyong/Library/ANDROID/SDK/cmdline-tools/latest/bin/avdmanager"
+        ]
+        
+        for path in cmdline_tools_paths:
+            expanded_path = os.path.expanduser(path)
+            if os.path.exists(expanded_path):
+                print(f"找到新版avdmanager工具: {expanded_path}")
+                return expanded_path
+        
+        # 尝试从传统路径中查找
         for path in common_paths:
             # 替换{USERNAME}占位符
             if "{USERNAME}" in path:
@@ -791,8 +804,11 @@ class CheckinSkill:
             try:
                 # 检查路径是否存在
                 if os.path.exists(expanded_path):
-                    # avdmanager通常在platform-tools的上一级/bin目录
-                    avdmanager_path = os.path.join(os.path.dirname(os.path.dirname(expanded_path)), "tools", "bin", "avdmanager")
+                    # 尝试从新版SDK结构中查找
+                    avdmanager_path = os.path.join(os.path.dirname(os.path.dirname(expanded_path)), "cmdline-tools", "latest", "bin", "avdmanager")
+                    if not os.path.exists(avdmanager_path):
+                        # 传统路径
+                        avdmanager_path = os.path.join(os.path.dirname(os.path.dirname(expanded_path)), "tools", "bin", "avdmanager")
                     # 对于Windows系统
                     if platform.system().lower() == "windows":
                         avdmanager_path += ".bat"
@@ -815,12 +831,28 @@ class CheckinSkill:
             return False
         
         try:
+            # 为新版cmdline-tools设置正确的Java环境
+            env = os.environ.copy()
+            # 检查是否是新版cmdline-tools
+            if "cmdline-tools" in avdmanager_path and "latest" in avdmanager_path:
+                # 为新版cmdline-tools设置Java 17
+                java_17_path = "/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home"
+                if os.path.exists(java_17_path):
+                    env["JAVA_HOME"] = java_17_path
+                    print("已为新版cmdline-tools设置Java 17环境")
+            
             # 执行avdmanager list avd命令
             result = subprocess.run(
                 [avdmanager_path, "list", "avd"],
                 capture_output=True,
-                text=True
+                text=True,
+                env=env
             )
+            
+            # 打印完整输出用于调试
+            print(f"avdmanager输出: {result.stdout}")
+            if result.stderr:
+                print(f"avdmanager错误: {result.stderr}")
             
             # 检查输出中是否包含模拟器名称
             if self.emulator_name in result.stdout:
@@ -855,11 +887,22 @@ class CheckinSkill:
             if platform.system().lower() == "windows":
                 sdkmanager_path += ".bat"
             
+            # 为新版cmdline-tools设置正确的Java环境
+            env = os.environ.copy()
+            # 检查是否是新版cmdline-tools
+            if "cmdline-tools" in avdmanager_path and "latest" in avdmanager_path:
+                # 为新版cmdline-tools设置Java 17
+                java_17_path = "/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home"
+                if os.path.exists(java_17_path):
+                    env["JAVA_HOME"] = java_17_path
+                    print("已为新版cmdline-tools设置Java 17环境")
+            
             # 检查系统镜像
             result = subprocess.run(
                 [sdkmanager_path, "--list"],
                 capture_output=True,
-                text=True
+                text=True,
+                env=env
             )
             
             if system_image not in result.stdout:
@@ -868,7 +911,8 @@ class CheckinSkill:
                 install_result = subprocess.run(
                     [sdkmanager_path, system_image],
                     capture_output=True,
-                    text=True
+                    text=True,
+                    env=env
                 )
                 if install_result.returncode != 0:
                     print(f"安装系统镜像失败: {install_result.stderr}")
@@ -880,7 +924,8 @@ class CheckinSkill:
             create_result = subprocess.run(
                 [avdmanager_path, "create", "avd", "--name", self.emulator_name, "--device", device, "--package", system_image, "--sdcard", sdcard_size, "--force"],
                 capture_output=True,
-                text=True
+                text=True,
+                env=env
             )
             
             if create_result.returncode == 0:
@@ -924,11 +969,26 @@ class CheckinSkill:
             # 非阻塞方式启动模拟器
             subprocess.Popen([emulator_path, "-avd", self.emulator_name])
             print("模拟器启动中...")
-            # 等待模拟器启动
-            emulator_start_time = self.config['sleep_times'].get('emulator_start', 30)
-            time.sleep(emulator_start_time)  # 给模拟器足够的启动时间
             
-            # 再次检查模拟器状态
+            # 智能等待模拟器启动
+            max_wait_time = self.config['sleep_times'].get('emulator_start', 30)
+            check_interval = 2
+            start_time = time.time()
+            
+            while time.time() - start_time < max_wait_time:
+                # 清除设备状态缓存
+                self.cache['status'].pop('device_status', None)
+                # 检查模拟器状态
+                if self.check_emulator_status():
+                    print("模拟器启动成功！")
+                    return True
+                # 等待一段时间后再次检查
+                time.sleep(check_interval)
+                print(f"等待模拟器启动... {(time.time() - start_time):.1f}s/{max_wait_time}s")
+            
+            # 超时后再次检查
+            print("模拟器启动超时，最终检查...")
+            self.cache['status'].pop('device_status', None)
             return self.check_emulator_status()
         except Exception as e:
             print(f"启动模拟器失败: {e}")
@@ -967,6 +1027,16 @@ class CheckinSkill:
             print(f"使用路径: {emulator_path} 关闭模拟器: {self.emulator_name}")
             # 使用adb命令关闭模拟器
             if self.check_adb_available():
+                # 首先关闭纷享销客应用
+                print(f"关闭纷享销客应用 {self.package_name}...")
+                try:
+                    self.execute_adb_command(["shell", "am", "force-stop", self.package_name], check=False)
+                    print("纷享销客应用已关闭")
+                    # 等待应用完全关闭
+                    time.sleep(2)
+                except Exception as e:
+                    print(f"关闭纷享销客应用失败: {e}")
+                
                 # 首先获取设备列表
                 result = self.execute_adb_command(["devices"])
                 if result:
@@ -989,19 +1059,23 @@ class CheckinSkill:
                         except Exception as e:
                             print(f"关闭设备 {device} 失败: {e}")
             
-            # 等待模拟器关闭（增加等待时间）
+            # 等待模拟器关闭（增加等待时间和轮询间隔）
             print("等待模拟器关闭...")
-            for i in range(10):
-                time.sleep(1)
+            max_attempts = 15  # 增加尝试次数
+            wait_interval = 3   # 增加等待间隔
+            
+            for i in range(max_attempts):
+                time.sleep(wait_interval)
                 # 清除设备状态缓存
                 self.cache['status'].pop('device_status', None)
                 # 检查模拟器状态
                 if not self.check_emulator_status():
                     print("模拟器已成功关闭")
                     return True
-                print(f"等待模拟器关闭... {i+1}/10")
+                print(f"等待模拟器关闭... {i+1}/{max_attempts}")
             
             # 再次检查模拟器状态
+            self.cache['status'].pop('device_status', None)  # 再次清除缓存
             if not self.check_emulator_status():
                 print("模拟器已成功关闭")
                 return True
@@ -1969,7 +2043,7 @@ class CheckinSkill:
         if not self.check_emulator_status():
             if not self.start_emulator():
                 return False, "无法启动模拟器，流程终止"
-            time.sleep(10)  # 等待模拟器启动
+            # 不需要额外等待，因为 start_emulator 已经确保模拟器启动成功
         
         return True, ""
     
