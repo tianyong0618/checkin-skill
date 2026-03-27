@@ -1946,6 +1946,12 @@ class CheckinSkill:
         try:
             print("检测打卡记录...")
             
+            # 尝试滚动屏幕以获取所有打卡记录
+            # 先向下滚动几次，确保能看到上面的记录
+            for i in range(2):
+                self.execute_adb_command(["shell", "input", "swipe", "720", "500", "720", "1500", "500"])
+                time.sleep(1)
+            
             # 使用UIAutomator dump界面层级
             success, used_cache = self.dump_ui_hierarchy("/sdcard/attendance_dump.xml")
             
@@ -1976,8 +1982,8 @@ class CheckinSkill:
                 container_content = xml_content
                 print("未找到考勤记录容器，在整个页面中查找打卡记录")
             
-            # 查找所有包含打卡信息的节点（使用更精确的匹配）
-            checkin_pattern = r'text="(\d{2}:\d{2} (智能签到|签到|签退))"[^>]+resource-id="com\.facishare\.fs:id/check_time"'
+            # 查找所有包含打卡信息的节点（使用更宽松的匹配）
+            checkin_pattern = r'text="(\d{2}:\d{2} (智能签到|签到|签退))"'
             checkin_matches = re.findall(checkin_pattern, container_content)
             
             print(f"找到的打卡记录匹配: {checkin_matches}")
@@ -1992,21 +1998,27 @@ class CheckinSkill:
                 if time_match:
                     checkin_time = time_match.group(1)
                     
-                    # 查找对应的状态（在同一父节点中查找）
-                    status_pattern = r'text="(正常|迟到|早退)"[^>]+resource-id="com\.facishare\.fs:id/check_status_1"'
+                    # 查找对应的状态（使用更宽松的匹配）
+                    status_pattern = r'text="(正常|迟到|早退)"'
                     status_match = re.search(status_pattern, container_content)
                     status = status_match.group(1) if status_match else "未知"
                     
-                    # 查找对应的地点
-                    location_pattern = r'text="([^"\n]+)"[^>]+resource-id="com\.facishare\.fs:id/check_text"'
+                    # 查找对应的地点（使用更宽松的匹配）
+                    location_pattern = r'text="([^"\n]+)"[^>]*check_text'
                     location_match = re.search(location_pattern, container_content)
                     location = location_match.group(1) if location_match else "未知地点"
                     
                     record = f"{checkin_time} {record_type}，状态: {status}，地点: {location}"
                     checkin_records.append(record)
             
-            # 去重
-            checkin_records = list(set(checkin_records))
+            # 去重并保持顺序
+            seen = set()
+            unique_records = []
+            for record in checkin_records:
+                if record not in seen:
+                    seen.add(record)
+                    unique_records.append(record)
+            checkin_records = unique_records
             
             print(f"最终打卡记录: {checkin_records}")
             return checkin_records
