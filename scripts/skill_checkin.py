@@ -1893,8 +1893,10 @@ class CheckinSkill:
             # 获取当前日期
             today = datetime.datetime.now()
             today_str = today.strftime("%m月%d日")
-            # 移除前导零
+            # 移除前导零并标准化格式
             today_str = today_str.lstrip('0')
+            # 处理日期中的零，例如将"4月01日"转换为"4月1日"
+            today_str = re.sub(r'(\d+)月0*(\d+)日', r'\1月\2日', today_str)
             
             print(f"当前日期: {today_str}")
             
@@ -1904,6 +1906,8 @@ class CheckinSkill:
             
             if date_match:
                 date_str = date_match.group(1)
+                # 标准化页面日期格式，移除可能的前导零
+                date_str = re.sub(r'(\d+)月0*(\d+)日', r'\1月\2日', date_str)
                 
                 print(f"页面显示日期: {date_str}")
                 
@@ -1925,7 +1929,9 @@ class CheckinSkill:
                     # 转换为与today_str相同的格式进行比较
                     try:
                         alt_date_obj = datetime.datetime.strptime(alternative_date, "%Y-%m-%d")
-                        alt_date_str = alt_date_obj.strftime("%m月%d日").lstrip('0')
+                        alt_date_str = alt_date_obj.strftime("%m月%d日")
+                        # 标准化格式
+                        alt_date_str = re.sub(r'(\d+)月0*(\d+)日', r'\1月\2日', alt_date_str)
                         if alt_date_str == today_str:
                             print("页面显示的是当天日期")
                             return True
