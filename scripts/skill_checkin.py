@@ -106,8 +106,9 @@ class CheckinSkill:
     
     def check_and_update_holidays(self):
         """检查并更新节假日信息
-        每次启动时检查是否有新的节假日需要更新
-        每年12月份时获取下一年的节假日信息
+        启动时加载配置文件中的holidays
+        如果当年的节假日不存在，去官方渠道获取
+        如果当前月份是12月，检查下一年的节假日是否存在，不存在就去获取，存在就跳过
         """
         print("=== 检查节假日信息 ===")
         
@@ -119,19 +120,22 @@ class CheckinSkill:
         # 检查配置文件中是否有当前年份的节假日信息
         holidays_config = self.config.get('holidays', {})
         if current_year not in holidays_config:
-            print(f"未找到 {current_year} 年的节假日信息，正在更新...")
+            print(f"未找到 {current_year} 年的节假日信息，正在从官方渠道获取...")
             self.update_holidays(current_year)
         else:
             print(f"已找到 {current_year} 年的节假日信息")
         
         # 检查下一年的节假日信息
         next_year = str(int(current_year) + 1)
-        # 每年12月份时强制更新下一年的节假日信息
-        if next_year not in holidays_config or current_month == 12:
-            print(f"{'12月份，强制更新' if current_month == 12 else '未找到'} {next_year} 年的节假日信息，正在更新...")
-            self.update_holidays(next_year)
+        # 如果当前月份是12月，检查下一年的节假日是否存在
+        if current_month == 12:
+            if next_year not in holidays_config:
+                print(f"12月份，未找到 {next_year} 年的节假日信息，正在从官方渠道获取...")
+                self.update_holidays(next_year)
+            else:
+                print(f"12月份，已找到 {next_year} 年的节假日信息，跳过更新")
         else:
-            print(f"已找到 {next_year} 年的节假日信息")
+            print(f"当前月份不是12月，跳过检查 {next_year} 年的节假日信息")
         
         print("=== 节假日信息检查完成 ===")
     
