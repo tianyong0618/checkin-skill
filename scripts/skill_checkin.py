@@ -1499,8 +1499,42 @@ class CheckinSkill:
                 (checkin_hour == start_time[0] and checkin_minute >= start_time[1]) or \
                 (checkin_hour == end_time[0] and checkin_minute <= end_time[1]))
     
+    def is_weekday(self):
+        """判断当天是否为工作日（非周末且非节假日）
+        Returns:
+            bool: 是否为工作日
+        """
+        now = datetime.datetime.now()
+        today = now.date()
+        
+        # 检查是否为周末
+        if today.weekday() >= 5:  # 5=周六, 6=周日
+            print(f"今天是{['周一', '周二', '周三', '周四', '周五', '周六', '周日'][today.weekday()]}, 属于周末，不需要打卡")
+            return False
+        
+        # 检查是否为节假日
+        # 从配置文件中读取节假日信息
+        holidays_config = self.config.get('holidays', {})
+        current_year = str(today.year)
+        year_holidays = holidays_config.get(current_year, [])
+        
+        for holiday in year_holidays:
+            start_date = datetime.datetime.strptime(holiday['start'], "%Y-%m-%d").date()
+            end_date = datetime.datetime.strptime(holiday['end'], "%Y-%m-%d").date()
+            
+            if start_date <= today <= end_date:
+                print(f"今天是{holiday['name']}，属于节假日，不需要打卡")
+                return False
+        
+        print(f"今天是工作日，需要打卡")
+        return True
+    
     def check_time_range(self):
         """检查当前时间是否在允许的打卡时间段内"""
+        # 首先检查是否为工作日
+        if not self.is_weekday():
+            return "out_of_range"
+        
         now = datetime.datetime.now()
         current_time = now.time()
         current_hour = current_time.hour
