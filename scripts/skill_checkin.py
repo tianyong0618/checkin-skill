@@ -65,6 +65,9 @@ class CheckinSkill:
         # 加载配置文件
         self.config = self.load_config()
         
+        # 加载节假日配置文件
+        self.holidays_config = self.load_holidays_config()
+        
         # 检查并更新节假日信息
         self.check_and_update_holidays()
         
@@ -118,7 +121,7 @@ class CheckinSkill:
         current_month = now.month
         
         # 检查配置文件中是否有当前年份的节假日信息
-        holidays_config = self.config.get('holidays', {})
+        holidays_config = self.holidays_config.get('holidays', {})
         if current_year not in holidays_config:
             print(f"未找到 {current_year} 年的节假日信息，正在从官方渠道获取...")
             self.update_holidays(current_year)
@@ -150,17 +153,17 @@ class CheckinSkill:
         holidays = self.fetch_holidays_from_api(year)
         
         # 更新配置
-        if 'holidays' not in self.config:
-            self.config['holidays'] = {}
+        if 'holidays' not in self.holidays_config:
+            self.holidays_config['holidays'] = {}
         
         if holidays:
-            self.config['holidays'][year] = holidays
+            self.holidays_config['holidays'][year] = holidays
             print(f"已成功获取并更新 {year} 年的节假日信息")
         else:
             print(f"无法获取 {year} 年的节假日信息，将使用缓存数据")
         
         # 保存更新后的配置
-        self.save_config()
+        self.save_holidays_config()
     
     def fetch_holidays_from_api(self, year):
         """从网络API获取节假日信息
@@ -216,9 +219,9 @@ class CheckinSkill:
             
             # 保存调休上班的日期到配置中
             if workdays:
-                if 'workdays' not in self.config:
-                    self.config['workdays'] = {}
-                self.config['workdays'][year] = workdays
+                if 'workdays' not in self.holidays_config:
+                    self.holidays_config['workdays'] = {}
+                self.holidays_config['workdays'][year] = workdays
             
             print(f"成功获取 {len(holidays)} 个节假日，{len(workdays)} 个调休日")
             return holidays
@@ -237,6 +240,17 @@ class CheckinSkill:
             print(f"配置已保存到: {config_path}")
         except Exception as e:
             print(f"保存配置失败: {e}")
+    
+    def save_holidays_config(self):
+        """保存节假日配置到文件
+        """
+        holidays_config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../config/holidays_config.json")
+        try:
+            with open(holidays_config_path, 'w', encoding='utf-8') as f:
+                json.dump(self.holidays_config, f, ensure_ascii=False, indent=2)
+            print(f"节假日配置已保存到: {holidays_config_path}")
+        except Exception as e:
+            print(f"保存节假日配置失败: {e}")
     
     def log(self, level, message):
         """日志输出方法
@@ -330,6 +344,25 @@ class CheckinSkill:
             print(f"加载配置文件失败: {e}")
             # 返回默认配置
             return self.get_default_config()
+    
+    def load_holidays_config(self):
+        """加载节假日配置文件
+        Returns:
+            dict: 节假日配置信息
+        """
+        holidays_config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../config/holidays_config.json")
+        try:
+            with open(holidays_config_path, 'r', encoding='utf-8') as f:
+                holidays_config = json.load(f)
+            print(f"成功加载节假日配置文件: {holidays_config_path}")
+            return holidays_config
+        except Exception as e:
+            print(f"加载节假日配置文件失败: {e}")
+            # 返回默认配置
+            return {
+                'holidays': {},
+                'workdays': {}
+            }
     
     def get_config(self, path, default=None):
         """获取配置值
@@ -1647,7 +1680,7 @@ class CheckinSkill:
         current_year = str(today.year)
         
         # 检查是否为调休上班日
-        workdays_config = self.config.get('workdays', {})
+        workdays_config = self.holidays_config.get('workdays', {})
         year_workdays = workdays_config.get(current_year, [])
         if today_str in year_workdays:
             print(f"今天是调休上班日，需要打卡")
@@ -1660,7 +1693,7 @@ class CheckinSkill:
         
         # 检查是否为节假日
         # 从配置文件中读取节假日信息
-        holidays_config = self.config.get('holidays', {})
+        holidays_config = self.holidays_config.get('holidays', {})
         year_holidays = holidays_config.get(current_year, [])
         
         for holiday in year_holidays:
