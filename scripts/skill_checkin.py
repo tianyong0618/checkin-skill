@@ -65,6 +65,9 @@ class CheckinSkill:
         # 加载配置文件
         self.config = self.load_config()
         
+        # 检查并更新节假日信息
+        self.check_and_update_holidays()
+        
         # 从配置中读取参数
         self.package_name = self.config['general']['package_name']
         self.activity_name = self.config['general']['activity_name']
@@ -100,6 +103,136 @@ class CheckinSkill:
             'hits': 0,
             'misses': 0
         }
+    
+    def check_and_update_holidays(self):
+        """检查并更新节假日信息
+        每次启动时检查是否有新的节假日需要更新
+        每年12月份时获取下一年的节假日信息
+        """
+        print("=== 检查节假日信息 ===")
+        
+        # 获取当前日期
+        now = datetime.datetime.now()
+        current_year = str(now.year)
+        current_month = now.month
+        
+        # 检查配置文件中是否有当前年份的节假日信息
+        holidays_config = self.config.get('holidays', {})
+        if current_year not in holidays_config:
+            print(f"未找到 {current_year} 年的节假日信息，正在更新...")
+            self.update_holidays(current_year)
+        else:
+            print(f"已找到 {current_year} 年的节假日信息")
+        
+        # 检查下一年的节假日信息
+        next_year = str(int(current_year) + 1)
+        # 每年12月份时强制更新下一年的节假日信息
+        if next_year not in holidays_config or current_month == 12:
+            print(f"{'12月份，强制更新' if current_month == 12 else '未找到'} {next_year} 年的节假日信息，正在更新...")
+            self.update_holidays(next_year)
+        else:
+            print(f"已找到 {next_year} 年的节假日信息")
+        
+        print("=== 节假日信息检查完成 ===")
+    
+    def update_holidays(self, year):
+        """更新指定年份的节假日信息
+        Args:
+            year: 年份，格式为字符串
+        """
+        print(f"正在从官方渠道获取 {year} 年的节假日信息...")
+        
+        # 从网络API获取节假日信息
+        holidays = self.fetch_holidays_from_api(year)
+        
+        # 更新配置
+        if 'holidays' not in self.config:
+            self.config['holidays'] = {}
+        
+        if holidays:
+            self.config['holidays'][year] = holidays
+            print(f"已成功获取并更新 {year} 年的节假日信息")
+        else:
+            print(f"无法获取 {year} 年的节假日信息，将使用缓存数据")
+        
+        # 保存更新后的配置
+        self.save_config()
+    
+    def fetch_holidays_from_api(self, year):
+        """从网络API获取节假日信息
+        Args:
+            year: 年份，格式为字符串
+        Returns:
+            list: 节假日信息列表
+        """
+        try:
+            import requests
+            
+            # 使用新的节假日API接口
+            # 来源：api.jiejiariapi.com
+            api_url = f"https://api.jiejiariapi.com/v1/holidays/{year}"
+            print(f"从官方渠道获取 {year} 年节假日信息...")
+            print(f"API URL: {api_url}")
+            
+            # 发送API请求
+            response = requests.get(api_url, timeout=10)
+            response.raise_for_status()  # 检查请求是否成功
+            
+            # 打印响应状态码和内容
+            print(f"API响应状态码: {response.status_code}")
+            print(f"API响应内容: {response.text[:500]}...")  # 只打印前500个字符
+            
+            # 解析API响应
+            data = response.json()
+            
+            # API返回的是一个字典，键是日期，值是节假日信息
+            holidays = []
+            workdays = []  # 调休上班的日期
+            
+            # 只保留指定的节日
+            allowed_holidays = ["元旦", "春节", "清明节", "劳动节", "端午节", "中秋节", "国庆节"]
+            
+            # 处理API返回的数据格式
+            for date_key, item in data.items():
+                holiday_name = item.get("name", "")
+                holiday_date = item.get("date", date_key)  # 如果没有date字段，使用键作为日期
+                is_off_day = item.get("isOffDay", True)
+                
+                # 只处理指定的节日
+                if holiday_name in allowed_holidays:
+                    if is_off_day:
+                        # 节假日
+                        holidays.append({
+                            "name": holiday_name,
+                            "date": holiday_date
+                        })
+                    else:
+                        # 调休上班，记录为工作日
+                        workdays.append(holiday_date)
+            
+            # 保存调休上班的日期到配置中
+            if workdays:
+                if 'workdays' not in self.config:
+                    self.config['workdays'] = {}
+                self.config['workdays'][year] = workdays
+            
+            print(f"成功获取 {len(holidays)} 个节假日，{len(workdays)} 个调休日")
+            return holidays
+        except Exception as e:
+            print(f"获取节假日信息失败: {e}")
+            # 失败时返回空列表，使用缓存数据
+            return []
+    
+    def save_config(self):
+        """保存配置到文件
+        """
+        config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../config/config.json")
+        try:
+            with open(config_path, 'w', encoding='utf-8') as f:
+                json.dump(self.config, f, ensure_ascii=False, indent=2)
+            print(f"配置已保存到: {config_path}")
+        except Exception as e:
+            print(f"保存配置失败: {e}")
     
     def log(self, level, message):
         """日志输出方法
@@ -1500,12 +1633,21 @@ class CheckinSkill:
                 (checkin_hour == end_time[0] and checkin_minute <= end_time[1]))
     
     def is_weekday(self):
-        """判断当天是否为工作日（非周末且非节假日）
+        """判断当天是否为工作日（非周末且非节假日，或调休上班）
         Returns:
             bool: 是否为工作日
         """
         now = datetime.datetime.now()
         today = now.date()
+        today_str = today.strftime("%Y-%m-%d")
+        current_year = str(today.year)
+        
+        # 检查是否为调休上班日
+        workdays_config = self.config.get('workdays', {})
+        year_workdays = workdays_config.get(current_year, [])
+        if today_str in year_workdays:
+            print(f"今天是调休上班日，需要打卡")
+            return True
         
         # 检查是否为周末
         if today.weekday() >= 5:  # 5=周六, 6=周日
@@ -1515,16 +1657,23 @@ class CheckinSkill:
         # 检查是否为节假日
         # 从配置文件中读取节假日信息
         holidays_config = self.config.get('holidays', {})
-        current_year = str(today.year)
         year_holidays = holidays_config.get(current_year, [])
         
         for holiday in year_holidays:
-            start_date = datetime.datetime.strptime(holiday['start'], "%Y-%m-%d").date()
-            end_date = datetime.datetime.strptime(holiday['end'], "%Y-%m-%d").date()
-            
-            if start_date <= today <= end_date:
-                print(f"今天是{holiday['name']}，属于节假日，不需要打卡")
-                return False
+            # 检查是否使用新格式（date字段）
+            if 'date' in holiday:
+                holiday_date = holiday['date']
+                if holiday_date == today_str:
+                    print(f"今天是{holiday['name']}，属于节假日，不需要打卡")
+                    return False
+            # 兼容旧格式（start和end字段）
+            elif 'start' in holiday and 'end' in holiday:
+                start_date = datetime.datetime.strptime(holiday['start'], "%Y-%m-%d").date()
+                end_date = datetime.datetime.strptime(holiday['end'], "%Y-%m-%d").date()
+                
+                if start_date <= today <= end_date:
+                    print(f"今天是{holiday['name']}，属于节假日，不需要打卡")
+                    return False
         
         print(f"今天是工作日，需要打卡")
         return True
