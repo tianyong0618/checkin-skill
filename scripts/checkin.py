@@ -2493,5 +2493,33 @@ def run_checkin(user_confirm_callback=None):
     result = skill.run(user_confirm_callback)
     return result
 
+def auto_confirm_callback(status_info):
+    """自动确认打卡"""
+    print(f"定位状态: {status_info['location']}")
+    print(f"当前时间: {status_info['current_time']}")
+    print(f"按钮状态: {status_info['button_status']}")
+    print(f"打卡记录数量: {status_info['checkin_records_count']}")
+    print("自动确认：执行打卡")
+    return True
+
 if __name__ == "__main__":
-    run_checkin()
+    import sys
+    # 默认使用自动模式，除非明确指定 --interactive
+    interactive_mode = len(sys.argv) > 1 and sys.argv[1] == "--interactive"
+    
+    if interactive_mode:
+        # 交互式模式，使用默认的命令行确认
+        result = run_checkin()
+    else:
+        # 自动模式，使用自动确认回调
+        result = run_checkin(auto_confirm_callback)
+    
+    if result['success']:
+        print(f"\n✅ 打卡成功！")
+        print(f"消息: {result['message']}")
+        if 'after' in result['screenshots']:
+            print(f"结果截图: {result['screenshots']['after']}")
+    else:
+        print(f"\n❌ 打卡失败: {result['message']}")
+    
+    sys.exit(0 if result['success'] else 1)

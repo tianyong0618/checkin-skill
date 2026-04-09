@@ -26,9 +26,7 @@ checkin-skill/
 ├── .workbuddy/      # WorkBuddy相关文件
 ├── scripts/         # 脚本文件
 │   ├── __init__.py                  # 包初始化文件
-│   ├── agent_integration_example.py  # Agent集成示例
-│   ├── auto_checkin.py               # 自动打卡脚本
-│   └── skill_checkin.py              # 打卡主脚本
+│   └── checkin.py                    # 打卡主脚本
 ├── screenshots/      # 截图保存目录
 ├── .gitignore        # Git忽略文件
 └── SKILL.md         # Skill说明文档
@@ -44,24 +42,24 @@ checkin-skill/
 
 ## 使用方法
 
-### 1. 直接运行
+### 1. 直接运行（自动模式，默认）
 
 ```bash
 cd checkin-skill/scripts
-python skill_checkin.py
+python checkin.py
 ```
 
-### 2. 自动打卡
+### 2. 交互式运行
 
 ```bash
 cd checkin-skill/scripts
-python auto_checkin.py
+python checkin.py --interactive
 ```
 
 ### 3. 集成到Agent中
 
 ```python
-from scripts.skill_checkin import run_checkin
+from scripts.checkin import run_checkin
 
 def user_confirm_callback(status_info):
     """用户确认回调函数"""
@@ -83,7 +81,7 @@ else:
 
 ### 4. Agent集成说明
 
-现在agent调用 `run_checkin` 函数时，会直接执行 `auto_checkin.py` 的逻辑，包括自动确认打卡的功能。这样可以确保agent使用的是完整的打卡流程，无需额外配置。
+现在agent调用 `run_checkin` 函数时，会使用默认的自动确认逻辑，确保agent使用的是完整的打卡流程，无需额外配置。如果需要自定义确认逻辑，可以提供回调函数。
 
 ## 执行流程
 

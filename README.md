@@ -93,13 +93,13 @@
 ### 命令行运行
 
 ```bash
-python3 scripts/skill_checkin.py
+python3 scripts/checkin.py
 ```
 
 ### 作为模块调用
 
 ```python
-from scripts.skill_checkin import run_checkin
+from scripts.checkin import run_checkin
 
 # 运行打卡流程
 result = run_checkin()
